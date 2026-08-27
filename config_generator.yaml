@@ -1,0 +1,11 @@
+main_path: /Users/liao./cernbox/public/HGTD_sensor
+mode: ihep 
+wafer_folder: 2nd_batch_95
+config_folder: analysis/configs
+script_folder: analysis/jobs
+log_folder: analysis/job_logs
+unzip_folder: analysis/unzipped
+temp_file: 2nd_batch_95/wafer_temperature_template.csv
+root_macro: analysis/Card52_v3.C
+output_path: analysis/results
+hep_sub_options: -wt short

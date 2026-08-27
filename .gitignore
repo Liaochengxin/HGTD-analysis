@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Generated workflow files
+configs/
+jobs/
+job_logs/
+results/
+unzipped/
+
+# ROOT/ACLiC build artifacts
+*_C.so
+*_C.d
+*_C_ACLiC_dict.cxx
+*_C_ACLiC_dict_rdict.pcm
