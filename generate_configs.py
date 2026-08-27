@@ -15,6 +15,7 @@ main_path = Path(config["main_path"])
 wafer_folder = main_path / config["wafer_folder"]
 config_folder = main_path / config["config_folder"]
 script_folder = main_path / config["script_folder"]
+run_local = main_path / config["run_local"]
 config_folder.mkdir(parents=True, exist_ok=True)
 script_folder.mkdir(parents=True, exist_ok=True)
 
@@ -46,7 +47,7 @@ for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir(
 
 print(f"Configs: {config_folder}")
 
-run_local = main_path / "analysis/run_local.py"
+#run_local = main_path / "HGTD-analysis/run_local.py"
 
 if config["mode"] == "local":
     shell_file = script_folder / "run_all.sh"
