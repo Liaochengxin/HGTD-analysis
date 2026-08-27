@@ -19,7 +19,8 @@ unzip_path = main_path / config["unzip_path"]
 input_prefix = main_path / config["input_prefix"]
 temperature_file = main_path / config["temp_file"]
 root_macro = main_path / config["root_macro"]
-result_path = main_path / config["output_path"] / config["wafer_name"]
+result_path = main_path / config["output_path"] / config["wafer_name"].replace("-", "_")
+
 
 serial_number = zip_path.stem
 with temperature_file.open(encoding="utf-8-sig", errors="replace", newline="") as file:
