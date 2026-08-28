@@ -29,13 +29,19 @@ for yield_file in sorted(RESULTS_PATH.glob("*/sensorYield.csv")):
             grade = row["Final_Status"]
             table = grade if grade in ("A", "C") else "B"
             tables[table].append(
-                {"wafer_serial_number": wafer_serials[wafer_name], **row}
+                {
+                    "wafer_serial_number": wafer_serials[wafer_name],
+                    "wafer_name": wafer_name,
+                    **row,
+                }
             )
 
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 for grade, rows in tables.items():
     with (OUTPUT_PATH / f"{grade}.csv").open("w", newline="") as file:
-        writer = csv.DictWriter(file, ["wafer_serial_number", *fieldnames])
+        writer = csv.DictWriter(
+            file, ["wafer_serial_number", "wafer_name", *fieldnames]
+        )
         writer.writeheader()
         writer.writerows(rows)
