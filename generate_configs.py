@@ -22,7 +22,7 @@ script_folder.mkdir(parents=True, exist_ok=True)
 wafer_configs = []
 
 for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir()):
-    zip_path = next(wafer_path.glob("*.zip"))
+    zip_path = next(path for path in wafer_path.glob("*.zip") if not path.name.startswith("._"))
     wafer_name = wafer_path.name
     config_name = wafer_name.replace("-", "_")
     serial_number = zip_path.stem

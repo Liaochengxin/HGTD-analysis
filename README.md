@@ -119,6 +119,12 @@ bash analysis/jobs/run_all.sh
 
 ## 5. 高能所 IHEP 批量提交
 
+在批量提交之前，你需要把sample传输到ihep cluster上，如果你使用mac，可以用下面命令，否则会把mac打包数据也传输到clutser上, 如果是windows就用普通的打包命令就好了
+
+```bash
+tar czvf target.tar.gz --no-xattrs --no-mac-metadata /path/to/source
+```
+
 提交方式参考[高能所 HTCondor/HepJob 文档](http://afsapply.ihep.ac.cn/cchelp/zh/local-cluster/jobs/HTCondor/)。
 
 把 `config_generator.yaml` 中的模式改为：
