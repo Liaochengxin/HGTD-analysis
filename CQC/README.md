@@ -4,17 +4,26 @@
 
 ## 1. 数据结构
 
-`2nd_batch_95/` 中共有 95 个晶圆目录，分为 B23、B31、B33 和 B36 四个 batch。
+`CQC_sample/2nd_batch_95/` 中共有 95 个晶圆目录，分为 B23、B31、B33 和 B36 四个 batch。
 
 每个晶圆目录通常包含：
 
 ```text
-20WS0013300017.zip
-20WS0013300017.csv                 # 已有的分析结果（部分目录使用 sensorYield.csv）
+20WS0013300017.zip                 # 原始 ZIP，始终保留
+20WS0013300017/                    # 解压后的 780 个 IV CSV（目录名 = ZIP 名）
+sensorYields.csv                   # 已有的分析结果（统一命名）
 sensor_attributes_template_*.CSV   # Sensor 序列号和晶圆位置
 sensor_parts_template_*.CSV        # Sensor 序列号和 batch
 parttree_sensor_*.CSV               # Wafer 与 Sensor 的父子关系
 ```
+
+解压由 `script/unzip_cqc.py` 统一完成（原地解压，保留 ZIP，幂等）：
+
+```bash
+python3 script/unzip_cqc.py
+```
+
+本目录的分析代码只读取已解压的 CSV，不做任何解压。
 
 ### 原始 ZIP
 
@@ -42,7 +51,7 @@ Voltage(V),Current(A)
 
 ### 晶圆级总表
 
-根目录下的三个文件分别记录：
+`2nd_batch_95/` 根目录下的三个文件分别记录：
 
 - `wafer_temperature_template.csv`：每片晶圆的测试温度；
 - `wafer_attributes_template.csv`：good sensor 数量、厚度、电阻率和外观等晶圆属性；
@@ -67,14 +76,13 @@ pip install pyyaml
 ```yaml
 main_path: /path/to/HGTD_sensor
 mode: local                 # local 或 ihep
-wafer_folder: 2nd_batch_95
-config_folder: analysis/configs
-script_folder: analysis/jobs
-log_folder: analysis/job_logs
-unzip_folder: analysis/unzipped
-temp_file: 2nd_batch_95/wafer_temperature_template.csv
-root_macro: analysis/Card52_v3.C
-output_path: analysis/results
+wafer_folder: CQC_sample/2nd_batch_95
+config_folder: HGTD-analysis/CQC/configs
+script_folder: HGTD-analysis/CQC/jobs
+log_folder: HGTD-analysis/CQC/job_logs
+temp_file: CQC_sample/2nd_batch_95/wafer_temperature_template.csv
+root_macro: HGTD-analysis/CQC/Card52_v3.C
+output_path: HGTD-analysis/CQC/results
 hep_sub_options: -wt short
 ```
 
@@ -83,14 +91,14 @@ hep_sub_options: -wt short
 执行：
 
 ```bash
-python3 analysis/generate_configs.py analysis/config_generator.yaml
+python3 HGTD-analysis/CQC/generate_configs.py HGTD-analysis/CQC/config_generator.yaml
 ```
 
-脚本会遍历 `wafer_folder` 下的晶圆目录，找到其中的 ZIP，并生成：
+脚本会遍历 `wafer_folder` 下的晶圆目录，定位其中已解压的数据子目录（`20WS*`），并生成：
 
 ```text
-analysis/configs/config_B33_17.yaml
-analysis/configs/config_B23_17.yaml
+HGTD-analysis/CQC/configs/config_B33_17.yaml
+HGTD-analysis/CQC/configs/config_B23_17.yaml
 ...
 ```
 
@@ -99,30 +107,30 @@ analysis/configs/config_B23_17.yaml
 ### 单片运行
 
 ```bash
-python3 analysis/run_local.py analysis/configs/config_B33_17.yaml
+python3 HGTD-analysis/CQC/run_local.py HGTD-analysis/CQC/configs/config_B33_17.yaml
 ```
 
 `run_local.py` 会自动：
 
 1. 读取温度表中的对应温度；
-2. 将 ZIP 解压到配置中的 `unzip_path`；
+2. 直接从解压好的数据子目录读取 CSV；
 3. 调用 `Card52_v3.C`；
 4. 按 Sensor 整理图片结果。
 
 运行全部晶圆：
 
 ```bash
-bash analysis/jobs/run_all.sh
+bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
 本地模式下，`run_all.sh` 会按顺序运行全部生成的配置。
 
 ## 5. 高能所 IHEP 批量提交
 
-在批量提交之前，你需要把sample传输到ihep cluster上，如果你使用mac，可以用下面命令，否则会把mac打包数据也传输到clutser上, 如果是windows就用普通的打包命令就好了
+在批量提交之前，你需要把sample传输到ihep cluster上，如果你使用mac，可以用下面命令，否则会把mac打包数据也传输到clutser上, 如果是windows就用普通的打包命令就好了。注意排除 zip（解压后的 CSV 已随目录树就位）：
 
 ```bash
-tar czvf target.tar.gz --no-xattrs --no-mac-metadata /path/to/source
+tar czvf target.tar.gz --no-xattrs --no-mac-metadata --exclude='*.zip' /path/to/source
 ```
 
 提交方式参考[高能所 HTCondor/HepJob 文档](http://afsapply.ihep.ac.cn/cchelp/zh/local-cluster/jobs/HTCondor/)。
@@ -142,20 +150,20 @@ main_path: /cefs/your/path/HGTD_sensor
 重新生成：
 
 ```bash
-python3 analysis/generate_configs.py analysis/config_generator.yaml
+python3 HGTD-analysis/CQC/generate_configs.py HGTD-analysis/CQC/config_generator.yaml
 ```
 
-IHEP 模式会生成一个 `analysis/jobs/run_all.sh`。该脚本只执行一次 `hep_sub`，通过 `-n 95` 创建一个包含 95 个 ProcId 的作业簇：
+IHEP 模式会生成一个 `HGTD-analysis/CQC/jobs/run_all.sh`。该脚本只执行一次 `hep_sub`，通过 `-n 95` 创建一个包含 95 个 ProcId 的作业簇：
 
 ```bash
-bash analysis/jobs/run_all.sh
+bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
 每个 ProcId 对应一片晶圆，脚本内部通过 wafer 数组映射到相应的 `config_Bxx_xx.yaml`。标准输出和错误日志写入：
 
 ```text
-analysis/job_logs/job_0.out
-analysis/job_logs/job_0.err
+HGTD-analysis/CQC/job_logs/job_0.out
+HGTD-analysis/CQC/job_logs/job_0.err
 ...
 ```
 
@@ -170,7 +178,7 @@ hep_q -u
 输出目录为：
 
 ```text
-analysis/results/B33-17/
+HGTD-analysis/CQC/results/B33_17/
 ├── sensorYield.csv
 ├── VbdMap.png
 ├── LKGnoMap.png
@@ -189,4 +197,4 @@ analysis/results/B33-17/
 
 不带 Sensor 编号的全局结果文件放在晶圆目录根部；带 Sensor 编号的 5 张图放入对应的 `sensor_N` 目录。
 
-解压后的原始 CSV 保留在 `analysis/unzipped/<wafer_name>/`，结果和解压目录已加入 `.gitignore`。
+分析代码不再产生解压目录；结果目录已加入 `.gitignore`。

@@ -22,11 +22,10 @@
 #define WAFER REPLACE_WAFERNUM
 #define SENSOR REPLACE_SENSORNUM
 
-TString out = "/mnt/d/HGTD/per_pad_2nd/B36/W3_P2/";
-TString addIME = "/mnt/d/HGTD/2nd/20WS0013600003/20WS2036000302-%d.csv"; //ProbeCard IME
-TString addIHEP = "/mnt/d/HGTD/B36/W3_P2/SweepVoltage0/1-%d.csv"; //Needle IHEP Huairou
-
-void temp_vbdmin_cross_toIME_v2()
+void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
+                                TString addIME = "/mnt/d/HGTD/2nd/20WS0013600003/20WS2036000302-%d.csv", //ProbeCard IME
+                                TString addIHEP = "/mnt/d/HGTD/B36/W3_P2/SweepVoltage0/1-%d.csv",       //Needle IHEP Huairou
+                                TString out = "/mnt/d/HGTD/per_pad_2nd/B36/W3_P2/")
 {
     // ---------- 0. 存储 ----------
     const int NProbe = 15;
@@ -51,12 +50,7 @@ void temp_vbdmin_cross_toIME_v2()
 
     int validProbe = 0, validNeedle = 0;
 
-    double Tp;
-    std::cout << "请输入探卡测试温度 (°C): ";
-    std::cin >> Tp;
-    double Tn;
-    std::cout << "请输入探针测试温度 (°C): ";
-    std::cin >> Tn;
+    // Tp/Tn 由函数参数传入: Tp=探卡(CQC)测试温度, Tn=探针台(SQC)测试温度
 
     // ---------- 1. 第一轮：仅取 Vbd ----------
     // --- 探针卡 15 通道 ---

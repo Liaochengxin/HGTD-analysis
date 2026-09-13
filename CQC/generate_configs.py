@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate one run_local.py config for each wafer ZIP."""
+"""Generate one run_local.py config for each wafer folder.
+
+The wafer ZIPs are expected to be already extracted by script/unzip_cqc.py:
+each wafer dir contains a data subfolder named after its serial number
+(e.g. B33_17/20WS0013300017/*.csv). No unzip happens here.
+"""
 
 import shlex
 import sys
@@ -22,19 +27,24 @@ script_folder.mkdir(parents=True, exist_ok=True)
 wafer_configs = []
 
 for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir()):
-    zip_path = next(path for path in wafer_path.glob("*.zip") if not path.name.startswith("._"))
+    # extracted data subfolder, named after the wafer serial number
+    data_dirs = [
+        path for path in wafer_path.iterdir()
+        if path.is_dir() and path.name.startswith("20WS")
+    ]
+    if not data_dirs:
+        continue  # not a wafer dir (e.g. aggregate folders)
+    data_dir = data_dirs[0]
     wafer_name = wafer_path.name
     config_name = wafer_name.replace("-", "_")
-    serial_number = zip_path.stem
+    serial_number = data_dir.name
     data_prefix = f"20WS20{serial_number[7:9]}{serial_number[-4:]}"
-    unzip_path = Path(config["unzip_folder"]) / wafer_name
 
     wafer_config = {
         "main_path": str(main_path),
         "wafer_name": wafer_name,
-        "zip_path": str(zip_path.relative_to(main_path)),
-        "unzip_path": str(unzip_path),
-        "input_prefix": str(unzip_path / data_prefix),
+        "serial_number": serial_number,
+        "input_prefix": str(data_dir.relative_to(main_path) / data_prefix),
         "temp_file": config["temp_file"],
         "root_macro": config["root_macro"],
         "output_path": config["output_path"],
@@ -46,8 +56,6 @@ for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir(
     wafer_configs.append((wafer_name, config_name, output_file))
 
 print(f"Configs: {config_folder}")
-
-#run_local = main_path / "HGTD-analysis/run_local.py"
 
 if config["mode"] == "local":
     shell_file = script_folder / "run_all.sh"

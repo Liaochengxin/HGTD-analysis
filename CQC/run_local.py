@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run Card52_v3.C with paths supplied by a yaml config file."""
+"""Run Card52_v3.C with paths supplied by a yaml config file.
+
+The wafer CSVs are expected to be already extracted by script/unzip_cqc.py;
+this script only reads them (config key input_prefix) and runs the macro.
+"""
 
 import csv
 import subprocess
@@ -14,21 +18,15 @@ with config_file.open() as file:
     config = yaml.safe_load(file)
 
 main_path = Path(config["main_path"])
-zip_path = main_path / config["zip_path"]
-unzip_path = main_path / config["unzip_path"]
 input_prefix = main_path / config["input_prefix"]
 temperature_file = main_path / config["temp_file"]
 root_macro = main_path / config["root_macro"]
 result_path = main_path / config["output_path"] / config["wafer_name"].replace("-", "_")
 
-
-serial_number = zip_path.stem
+serial_number = config["serial_number"]
 with temperature_file.open(encoding="utf-8-sig", errors="replace", newline="") as file:
     temperatures = {row[0]: float(row[1]) for row in list(csv.reader(file))[1:] if row}
 temperature = temperatures[serial_number]
-
-unzip_path.mkdir(parents=True, exist_ok=True)
-subprocess.run(["unzip", "-q", "-j", "-o", zip_path, "-d", unzip_path])
 
 result_path.mkdir(parents=True, exist_ok=True)
 root_call = f'{root_macro}("{input_prefix}",{temperature})'
