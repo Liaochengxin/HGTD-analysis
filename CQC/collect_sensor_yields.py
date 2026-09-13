@@ -7,13 +7,23 @@ from pathlib import Path
 
 
 MAIN_PATH = Path("/Users/liao./cernbox/public/HGTD_sensor")
-WAFER_PARTS_PATH = MAIN_PATH / "2nd_batch_95/wafer_parts_template.csv"
+WAFER_PARTS_PATH = MAIN_PATH / "CQC_sample/2nd_batch_95/wafer_parts_template.csv"
 INPUT_PATH = MAIN_PATH / sys.argv[1]
-OUTPUT_PATH = MAIN_PATH / "HGTD-analysis/results" / (
+OUTPUT_PATH = MAIN_PATH / "HGTD-analysis/CQC/results" / (
     "sensor_yields_by_grade_IME"
     if INPUT_PATH.name == "2nd_batch_95"
     else "sensor_yields_by_grade"
 )
+
+
+def find_yield_file(wafer_path):
+    """Yield summary naming evolved: sensorYields.csv (current unified name),
+    sensorYield.csv (older runs), <serial>.csv (oldest)."""
+    for name in ("sensorYields.csv", "sensorYield.csv"):
+        f = wafer_path / name
+        if f.exists():
+            return f
+    return next(wafer_path.glob("20WS*.csv"))
 
 
 with WAFER_PARTS_PATH.open(newline="", encoding="utf-8-sig", errors="replace") as file:
@@ -28,9 +38,7 @@ fieldnames = None
 for wafer_path in sorted(
     path for path in INPUT_PATH.iterdir() if path.is_dir() and path.name.startswith("B")
 ):
-    yield_file = wafer_path / "sensorYield.csv"
-    if not yield_file.exists():
-        yield_file = next(wafer_path.glob("20WS*.csv"))
+    yield_file = find_yield_file(wafer_path)
 
     wafer_name = wafer_path.name.replace("-", "_")
     with yield_file.open(newline="") as file:

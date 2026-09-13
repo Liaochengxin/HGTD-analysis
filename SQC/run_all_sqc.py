@@ -1,44 +1,26 @@
 #!/usr/bin/env python3
 # -----------------2026.09.13--------------------
-# Batch wrapper for temp_vbdmin_cross_toIME_v2.C
-# Scans SQC_sample/<gen>/B<batch>/W<wafer>_P<pos>/SweepVoltage0, runs the ROOT
-# macro once per sensor, and aggregates all crosscheck.csv into one summary.
+# Batch runner for temp_vbdmin_cross_toIME_v2.C, driven by a yaml config.
+# Scans <sqc_folder>/B*/W*_P*/SweepVoltage0, matches each sensor against the
+# CQC data, runs the ROOT macro once per sensor, aggregates crosscheck.csv.
 #
 # Usage:
-#   python3 run_all_sqc.py                 # run everything found in SQC_sample
-#   python3 run_all_sqc.py --filter B31    # only sensors whose label contains B31
-#   python3 run_all_sqc.py --dry-run       # list what would run, execute nothing
+#   python3 run_all_sqc.py <config.yaml>                # run everything
+#   python3 run_all_sqc.py <config.yaml> --filter B31   # label substring filter
+#   python3 run_all_sqc.py <config.yaml> --dry-run      # plan only
 
 import argparse
 import csv
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-MACRO = Path(__file__).parent / "temp_vbdmin_cross_toIME_v2.C"
-BASE = Path(__file__).parents[2]  # HGTD_sensor/
-DEFAULT_SQC = BASE / "SQC_sample"
-DEFAULT_CQC = BASE / "test_CQC"
-DEFAULT_TEMP = DEFAULT_CQC / "wafer_temperature_template.csv"
-DEFAULT_OUT = BASE / "test_out"
-TN_SQC = 20.0  # SQC (needle) temperature, fixed
-
-
-def parse_args():
-    p = argparse.ArgumentParser(description="Batch-run temp_vbdmin_cross_toIME_v2.C")
-    p.add_argument("--sqc", type=Path, default=DEFAULT_SQC)
-    p.add_argument("--cqc", type=Path, default=DEFAULT_CQC)
-    p.add_argument("--temp-csv", type=Path, default=DEFAULT_TEMP)
-    p.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    p.add_argument("--filter", default="", help="substring filter on sensor label")
-    p.add_argument("--dry-run", action="store_true")
-    return p.parse_args()
+import yaml
 
 
 def load_wafer_temps(path):
-    """温度表序列号规则: 20WS0013 + 批次末位 + {wafer:05d}, 如 20WS0013100015 -> (31, 15) -> 21.8"""
+    """Serial rule: 20WS0013 + batch last digit + {wafer:05d}."""
     temps = {}
     if not path.exists():
         return temps
@@ -46,8 +28,7 @@ def load_wafer_temps(path):
         for row in csv.reader(fh):
             if len(row) < 2 or not row[0].strip().startswith("20WS"):
                 continue
-            sn = row[0].strip()
-            m = re.search(r"(\d)(\d{5})$", sn)
+            m = re.search(r"(\d)(\d{5})$", row[0].strip())
             if not m:
                 continue
             try:
@@ -57,24 +38,42 @@ def load_wafer_temps(path):
     return temps
 
 
-def find_cqc(cqc_root, batch, wafer, pos):
-    """返回 (探卡路径前缀含-%d, Tp, 来源标记)。先按序列号精确匹配, 否则用占位数据。"""
-    serial = f"20WS2{batch:03d}{wafer:04d}{pos:02d}"
+def find_cqc(cqc_root, cqc_sample, batch, wafer, pos, temps=None):
+    """CQC match: CQC_sample real match > test_CQC exact serial > placeholder."""
+    sensor_serial = f"20WS2{batch:03d}{wafer:04d}{pos:02d}"
+    wafer_dir = cqc_sample / f"B{batch}_{wafer}"
+    if wafer_dir.is_dir():
+        data_dirs = [
+            d for d in wafer_dir.iterdir()
+            if d.is_dir() and d.name.startswith("20WS")
+        ]
+        if data_dirs:
+            wafer_serial = data_dirs[0].name
+            if (data_dirs[0] / f"{sensor_serial}-1.csv").exists():
+                tp = temps.get(wafer_serial) if temps is not None else None
+                prefix = str(data_dirs[0] / sensor_serial) + "-%d.csv"
+                return prefix, tp, f"matched:{wafer_dir.name}"
     if cqc_root.exists():
         for d in sorted(cqc_root.iterdir()):
-            if d.is_dir() and (d / f"{serial}-1.csv").exists():
-                return str(d / serial) + "-%d.csv", None, "matched"
-        for d in sorted(cqc_root.iterdir()):  # placeholder: first available CQC set
+            if d.is_dir() and (d / f"{sensor_serial}-1.csv").exists():
+                return str(d / sensor_serial) + "-%d.csv", None, "matched"
+        for d in sorted(cqc_root.iterdir()):
             if d.is_dir():
                 files = sorted(d.glob("*-1.csv"))
                 if files:
                     prefix = files[0].name[: -len("-1.csv")]
                     return str(d / prefix) + "-%d.csv", None, "placeholder"
+    if cqc_sample.exists():
+        for d in sorted(cqc_sample.glob("B*/20WS*")):
+            files = sorted(d.glob("*-1.csv"))
+            if files:
+                prefix = files[0].name[: -len("-1.csv")]
+                return str(d / prefix) + "-%d.csv", None, "placeholder"
     return None, None, "missing"
 
 
 def discover(sqc_root):
-    """返回 [(label, needle_dir)], label 形如 1st-B31-W22-P3"""
+    """Return [(label, batch, wafer, pos, needle_dir)], label like 1st-B31-W22-P3."""
     sensors = []
     for sv in sorted(sqc_root.glob("*/B*/W*_P*/SweepVoltage0")):
         m = re.match(r"W(\d+)_P(\d+)$", sv.parent.name)
@@ -90,9 +89,9 @@ def discover(sqc_root):
 
 def run_one(macro_args, outdir, log):
     outdir.mkdir(parents=True, exist_ok=True)
-    cmd = ["root", "-b", "-q", macro_args]
     with open(log, "w") as lh:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(["root", "-b", "-q", macro_args],
+                              capture_output=True, text=True)
         lh.write(proc.stdout)
         lh.write(proc.stderr)
     return proc.returncode == 0
@@ -108,37 +107,46 @@ def read_crosscheck(outdir):
 
 
 def main():
-    args = parse_args()
-    temps = load_wafer_temps(args.temp_csv)
-    sensors = discover(args.sqc)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("config")
+    ap.add_argument("--filter", default="", help="substring filter on label")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    with open(args.config) as fh:
+        cfg = yaml.safe_load(fh)
+    main_path = Path(cfg["main_path"])
+    sqc_root = main_path / cfg["sqc_folder"]
+    cqc_root = main_path / cfg["cqc_fallback_folder"]
+    cqc_sample = main_path / cfg["cqc_folder"]
+    temps = load_wafer_temps(main_path / cfg["temp_file"])
+    macro = main_path / cfg["macro"]
+    out_root = main_path / cfg["output_path"]
+    tn = float(cfg.get("tn", 20.0))
+
+    sensors = discover(sqc_root)
     if args.filter:
         sensors = [s for s in sensors if args.filter in s[0]]
-    print(f"Found {len(sensors)} sensors under {args.sqc}")
+    print(f"Found {len(sensors)} sensors under {sqc_root}")
     if not sensors:
-        sys.exit(1)
+        raise SystemExit(1)
 
-    # 第一遍: 解析配对与温度, 展示计划
     plan = []
     for label, batch, wafer, pos, needle_dir in sensors:
-        ime_tpl, tp, src = find_cqc(args.cqc, batch, wafer, pos)
+        ime_tpl, tp, src = find_cqc(cqc_root, cqc_sample, batch, wafer, pos, temps)
         if ime_tpl is None:
-            print(f"  [skip] {label}: no CQC data available at all")
+            print(f"  [skip] {label}: no CQC data at all")
             continue
         if tp is None:
-            tp = temps.get((batch % 10, wafer))
-        if tp is None:
-            tp = 20.0
+            tp = temps.get((batch % 10, wafer), 20.0)
         n_files = len(list(needle_dir.glob("1-*.csv")))
         if n_files == 0:
             print(f"  [skip] {label}: needle dir is empty")
             continue
         if n_files != 225:
             print(f"  [warn] {label}: needle has {n_files}/225 files")
-        outdir = args.out / label
-        macro_args = (
-            f"{MACRO}({tp},{TN_SQC},"
-            f'"{ime_tpl}","{needle_dir}/1-%d.csv","{outdir}/")'
-        )
+        outdir = out_root / label
+        macro_args = f'{macro}({tp},{tn},"{ime_tpl}","{needle_dir}/1-%d.csv","{outdir}/")'
         plan.append((label, macro_args, outdir, tp, src))
         print(f"  {label}: Tp={tp} ({src}), out={outdir}")
 
@@ -146,14 +154,12 @@ def main():
         print("\nDry run, nothing executed.")
         return
 
-    # 第二遍: 逐片执行 + 汇总
     summary_rows = []
     t0 = time.time()
     for i, (label, macro_args, outdir, tp, src) in enumerate(plan, 1):
-        dt = time.time() - t0
-        print(f"\n[{i}/{len(plan)}] {label} (elapsed {dt:.0f}s) ...", flush=True)
-        ok = run_one(macro_args, outdir, outdir / "run.log")
-        if not ok:
+        print(f"\n[{i}/{len(plan)}] {label} (elapsed {time.time()-t0:.0f}s) ...",
+              flush=True)
+        if not run_one(macro_args, outdir, outdir / "run.log"):
             print(f"  FAILED - see {outdir/'run.log'}")
             continue
         cc = read_crosscheck(outdir)
@@ -164,16 +170,16 @@ def main():
               f"VbdMin={needle.get('VbdMin')} IRatio={needle.get('IRatio')} "
               f"Valid={needle.get('Valid')}")
 
-    summary = args.out / "summary_all.csv"
     if summary_rows:
+        summary = out_root / "summary_all.csv"
         keys = ["label", "Tp", "cqc", "Group", "Mean", "RMS", "VbdMin",
                 "RMS/Mean", "IRatio", "LKGMin", "LKGMax", "Valid"]
         with open(summary, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=keys)
             w.writeheader()
             w.writerows(summary_rows)
-    print(f"\nDone: {len(plan)} sensors in {time.time()-t0:.0f}s")
-    print(f"Summary: {summary}")
+        print(f"\nDone: {len(plan)} sensors in {time.time()-t0:.0f}s")
+        print(f"Summary: {summary}")
 
 
 if __name__ == "__main__":

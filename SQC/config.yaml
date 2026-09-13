@@ -1,0 +1,8 @@
+main_path: /lustrefs/atlas/SUSY/users/liaocx/HGTD/
+sqc_folder: SQC_sample
+cqc_folder: CQC_sample/2nd_batch_95
+cqc_fallback_folder: test_CQC
+temp_file: CQC_sample/2nd_batch_95/wafer_temperature_template.csv
+macro: HGTD-analysis/SQC/temp_vbdmin_cross_toIME_v2.C
+output_path: HGTD-analysis/SQC/results
+tn: 20.0
