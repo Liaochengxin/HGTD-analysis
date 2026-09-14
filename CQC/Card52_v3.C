@@ -80,9 +80,9 @@ void Card52_v3(TString addshort, double Tp){
     
     double IRtoSensorC[52];
     
-    double VbdColumn[52][15];
-    
-    double LKGColumn[52][15];
+    double VbdColumn[52][15] = {{0}};
+
+    double LKGColumn[52][15] = {{0}};
     
     double LKGmax[52];
     
@@ -161,7 +161,28 @@ void Card52_v3(TString addshort, double Tp){
             double *x = g1->GetX();
             double *y = g1->GetY();
             int if_fi=0;
-            for(int j=1;(j<=N-1)&&(if_fi==0);j++){
+            // Fix 2026-09-14 (out-of-bounds read): the old loop bound j<=N-1
+            // accessed y[j+1] = y[N], one element past the last point.  On
+            // columns without a real crossing (open columns) that read pulls
+            // in heap garbage, which can fake a crossing and yield absurd
+            // Vbd values (-2.8e110 V seen in batch-2 cross-check).  Bound is
+            // now j<N-1 so j+1 stays inside the array, and the scan starts
+            // at j=0 so a crossing between the first two points is not missed.
+            // A column already above the threshold at the first point is a
+            // hard short: record the breakdown at the sweep start.
+            if (N > 0 && -y[0] * 1e6 > 15 * LCT) {
+                double V_bd = -x[0];
+                double V_bd20d = V_bd - (Tp - 20) * 1.1;
+                printf("SHORT Sensor %d  col %2d  raw=%7.3f V  T=%4.1f°C  corr=%7.3f V\n",
+       z, i, V_bd, Tp, V_bd20d);
+                for (int k = 0; k < 15; k++) h1->Fill(i - 0.5, k + 0.5, V_bd20d);
+                hs->Fill(V_bd20d);
+                VbdColumn[z-1][i-1] = V_bd20d;
+                VbdCMin[z-1] = TMath::Min(VbdCMin[z-1], V_bd);
+                Vbd20dCMin[z-1] = TMath::Min(Vbd20dCMin[z-1], V_bd20d);
+                if_fi = 1;
+            }
+            for(int j=0;(j<N-1)&&(if_fi==0);j++){
                 if ((-y[j] * 1e6 <= 15 * LCT) && (-y[j+1] * 1e6 > 15 * LCT)){
                     double I_bd = 15 * LCT * 1e-6; 
                     double x1 = -x[j+1], x2 = -x[j];  // V
@@ -185,8 +206,8 @@ void Card52_v3(TString addshort, double Tp){
                     break;
                 }
             }
-            if (if_fi == 0) {
-                double V_bd   = -x[N-1];  
+            if (if_fi == 0 && N > 0) {
+                double V_bd   = -x[N-1];
                 double V_bd20d    = V_bd - (Tp - 20) * 1.1;
                 printf("NEW   Sensor %d  col %2d  raw=%7.3f V  T=%4.1f°C  corr=%7.3f V\n",
        z, i, V_bd, Tp, V_bd20d);
@@ -216,8 +237,11 @@ void Card52_v3(TString addshort, double Tp){
             TGraph *g1 = new TGraph(N, x00, y00);
             double *x = g1->GetX();
             double *y = g1->GetY();
-            int if_fi=0;   
-            for(int j=1;(j<=N-1)&&(if_fi==0);j++){
+            int if_fi=0;
+            // Fix 2026-09-14: same bound fix as the breakdown scan (j+1 must
+            // stay inside the array); j starts at 0 so a VProbe below the
+            // second sample point interpolates instead of finding nothing.
+            for(int j=0;(j<N-1)&&(if_fi==0);j++){
                 if ((-x[j] <= VProbe) && (-x[j+1] > VProbe)) {
                     double x1 = -x[j+1], x2 = -x[j];  // V
                     double y1 = -y[j+1], y2 = -y[j];  // I
