@@ -1,127 +1,191 @@
 #!/usr/bin/env python3
-# -----------------2026.09.13--------------------
-# Generate IHEP HTCondor (hep_sub) job files for the SQC batch:
-# one job per sensor, all submitted in ONE hep_sub call (same cluster id).
-# Reads the same config.yaml as run_all_sqc.py; all paths baked into the job
-# files are ABSOLUTE (main_path + relative), so run this on the machine where
-# the jobs will run.
-#
-# Usage:
-#   python3 make_condor_jobs.py <config.yaml>
+"""Generate IHEP hep_sub or CERN EosSubmit jobs for the SQC sensor plan.
 
-import os
-import sys
+Usage:
+    make_condor_jobs.py CONFIG
+
+Run this on the target cluster after inputs have been copied to their final,
+worker-accessible paths. The same build_plan helper is used by local runs.
+"""
+
+import argparse
+import shlex
+import tarfile
 from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_all_sqc import discover, find_cqc, load_wafer_temps
-
-CONDOR_DIR = Path(__file__).parent / "condor"
+from run_all_sqc import build_plan, write_plan_manifest
 
 
-def build_plan(cfg):
-    main_path = Path(cfg["main_path"])
-    sqc_root = main_path / cfg["sqc_folder"]
-    cqc_root = main_path / cfg["cqc_fallback_folder"]
-    cqc_sample = main_path / cfg["cqc_folder"]
-    temps = load_wafer_temps(main_path / cfg["temp_file"])
-    tn = float(cfg.get("tn", 20.0))
-
-    plan = []
-    for label, batch, wafer, pos, needle_dir in discover(sqc_root):
-        ime_tpl, tp, src = find_cqc(cqc_root, cqc_sample, batch, wafer, pos, temps)
-        if ime_tpl is None:
-            print(f"  [skip] {label}: no CQC data at all")
-            continue
-        if tp is None:
-            tp = temps.get((batch % 10, wafer), 20.0)
-        n_files = len(list(needle_dir.glob("1-*.csv")))
-        if n_files == 0:
-            print(f"  [skip] {label}: needle dir is empty")
-            continue
-        if n_files != 225:
-            print(f"  [warn] {label}: needle has {n_files}/225 files")
-        needle_abs = str(needle_dir) + "/1-%d.csv"
-        plan.append((label, tp, ime_tpl, needle_abs))
-    return plan, tn
+def env_setup(cfg):
+    atlas_root = shlex.quote(cfg.get(
+        "atlas_local_root_base", "/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase"
+    ))
+    root_version = shlex.quote("root " + cfg.get("root_version", "6.40.02-x86_64-el9-gcc15-opt"))
+    return f'''export ATLAS_LOCAL_ROOT_BASE={atlas_root}
+source "$ATLAS_LOCAL_ROOT_BASE/user/atlasLocalSetup.sh"
+lsetup {root_version}
+'''
 
 
-JOB_SH = """#!/bin/bash
-# One SQC sensor per job. $1 = ProcId (0-based), maps to sensors.list line N+1.
-set -e
-JOB_DIR="{job_dir}"
-[ -f "$JOB_DIR/root_env.sh" ] && source "$JOB_DIR/root_env.sh"
-
+def generate_ihep(job_dir, plan, cfg, macro, output_root):
+    fields = []
+    for task in plan:
+        fields.append("\t".join(str(task[key]) for key in
+                                 ("label", "tp", "probe_tpl", "needle_tpl",
+                                  "output_group", "output_sensor")))
+    (job_dir / "sensors.list").write_text("\n".join(fields) + "\n")
+    job_script = f'''#!/bin/bash
+JOB_DIR={shlex.quote(str(job_dir))}
+MACRO={shlex.quote(str(macro))}
+TN={float(cfg.get('tn', 20.0))}
+{env_setup(cfg)}
 line=$(sed -n "$(( $1 + 1 ))p" "$JOB_DIR/sensors.list")
-if [ -z "$line" ]; then echo "empty sensors.list line for ProcId=$1"; exit 1; fi
-IFS='|' read -r label tp ime_tpl needle_tpl <<< "$line"
-
-out="$JOB_DIR/results/$label"
+if [ -z "$line" ]; then echo "No sensor plan for ProcId=$1" >&2; exit 1; fi
+IFS=$'\\t' read -r label tp probe_tpl needle_tpl output_group output_sensor <<< "$line"
+out={shlex.quote(str(output_root))}/"$output_group"/"$output_sensor"
 mkdir -p "$out"
-root -b -q "{macro}($tp,{tn},\\"$ime_tpl\\",\\"$needle_tpl\\",\\"$out/\\")" \\
-    > "$out/root.log" 2>&1
+macro_call="${{MACRO}}(${{tp}},${{TN}},\\\"${{probe_tpl}}\\\",\\\"${{needle_tpl}}\\\",\\\"${{out}}/\\\")"
+root -b -q "$macro_call" > "$out/run.log" 2>&1
 echo "done: $label -> $out"
-"""
+'''
+    (job_dir / "job.sh").write_text(job_script)
 
-ROOT_ENV_SH = """#!/bin/bash
-# Set up cluster ROOT here if it is not already in PATH on the worker nodes.
-echo "WARNING: root_env.sh not configured, assuming root is in PATH" >&2
-"""
-
-SUBMIT_SH = """#!/bin/bash
-# Submit all sensors in ONE hep_sub call: N sensors = N ProcIds (0..N-1)
-# under the same cluster id. Run from the condor/ directory.
-set -e
+    options = cfg.get("hep_sub_options", "").strip()
+    stdout = shlex.quote(str(job_dir / "logs" / "job_%{ProcId}.out"))
+    stderr = shlex.quote(str(job_dir / "logs" / "job_%{ProcId}.err"))
+    submit_script = f'''#!/bin/bash
 cd "$(dirname "$0")"
-N=$(wc -l < sensors.list | tr -d ' ')
-hep_sub job.sh -argu "%{ProcId}" -n "$N"
-echo "submitted $N jobs under one cluster id; check with: hep_q -u $USER"
-"""
+mkdir -p logs
+hep_sub {options} -o {stdout} -e {stderr} -argu "%{{ProcId}}" -n {len(plan)} job.sh
+'''
+    (job_dir / "submit_all.sh").write_text(submit_script)
 
-COLLECT_PY = """#!/usr/bin/env python3
-# After all jobs finish, run in condor/: python3 collect_results.py
-import csv, glob, os
+
+def generate_cern(job_dir, plan, cfg, macro, output_root, jobs_name=None):
+    if any(any(ch.isspace() for ch in str(task[key]))
+           for task in plan for key in
+           ("label", "probe_tpl", "needle_tpl", "output_group", "output_sensor")):
+        raise SystemExit("CERN queue file paths/labels must not contain whitespace")
+    rows = ["\t".join(str(task[key]) for key in
+                      ("label", "tp", "probe_tpl", "needle_tpl",
+                       "output_group", "output_sensor")) for task in plan]
+    (job_dir / "sensors.list").write_text("\n".join(rows) + "\n")
+    with tarfile.open(job_dir / "source.tar", "w") as archive:
+        archive.add(macro, arcname="src/temp_vbdmin_cross_toIME_v2.C")
+
+    job_script = f'''#!/bin/bash
+{env_setup(cfg)}
+tar -xf source.tar
+label="$1"
+tp="$2"
+probe_tpl="$3"
+needle_tpl="$4"
+output_group="$5"
+output_sensor="$6"
+out={shlex.quote(str(output_root))}/"$output_group"/"$output_sensor"
+mkdir -p "$out"
+macro_call="$PWD/src/temp_vbdmin_cross_toIME_v2.C($tp,{float(cfg.get('tn', 20.0))},\\"$probe_tpl\\",\\"$needle_tpl\\",\\"$out/\\")"
+root -b -q "$macro_call" > "$out/run.log" 2>&1
+echo "done: $label -> $out"
+'''
+    (job_dir / "job.sh").write_text(job_script)
+    submit = f'''universe     = vanilla
+executable   = job.sh
+arguments    = $(label) $(tp) $(probe_tpl) $(needle_tpl) $(output_group) $(output_sensor)
+transfer_input_files = source.tar
+output       = out/$(ClusterId).$(ProcId).out
+error        = out/$(ClusterId).$(ProcId).err
+log          = logs/$(ClusterId).log
++JobFlavour  = "{cfg.get('flavour', 'microcentury')}"
+MY.WantOS    = "el9"
+queue label, tp, probe_tpl, needle_tpl, output_group, output_sensor from sensors.list
+'''
+    (job_dir / "cern_batch.sub").write_text(submit)
+    batch_name_option = (
+        f"-batch-name {shlex.quote(jobs_name)} " if jobs_name else ""
+    )
+    (job_dir / "submit_all.sh").write_text(
+        f'#!/bin/bash\ncd "$(dirname "$0")"\nmkdir -p out logs\n'
+        f'condor_submit {batch_name_option}cern_batch.sub\n'
+    )
+
+
+def generate_collector(job_dir, output_root):
+    script = f'''#!/usr/bin/env python3
+import csv
+from pathlib import Path
+
+root = Path({str(output_root)!r})
+manifest_path = root / "sensor_plan.csv"
+manifest = {{}}
+if manifest_path.exists():
+    with manifest_path.open(newline="") as stream:
+        manifest = {{(row["output_group"], row["output_sensor"]): row
+                    for row in csv.DictReader(stream)}}
 rows = []
-for f in sorted(glob.glob("results/*/crosscheck.csv")):
-    label = os.path.basename(os.path.dirname(f))
-    with open(f) as fh:
-        for r in csv.DictReader(fh):
-            rows.append({"label": label, **r})
-keys = ["label", "Group", "Mean", "RMS", "VbdMin", "RMS/Mean",
-        "IRatio", "LKGMin", "LKGMax", "Valid"]
-with open("summary_all.csv", "w", newline="") as fh:
-    w = csv.DictWriter(fh, fieldnames=keys)
-    w.writeheader()
-    w.writerows(rows)
-print(f"summary_all.csv: {len(rows)} rows from {len(glob.glob('results/*'))} sensors")
-"""
+for path in sorted(root.glob("B*/**/crosscheck.csv")):
+    with path.open(newline="") as stream:
+        key = (path.parent.parent.name, path.parent.name)
+        meta = manifest.get(key, {{}})
+        label = meta.get("label", path.parent.name)
+        rows.extend({{"label": label, "Tp": meta.get("Tp", ""), "cqc": meta.get("cqc", ""), **row}} for row in csv.DictReader(stream))
+fields = ["label", "Tp", "cqc", "Group", "Mean", "RMS", "VbdMin", "RMS/Mean", "IRatio", "LKGMin", "LKGMax", "Valid"]
+target = root / "summary_all.csv"
+with target.open("w", newline="") as stream:
+    writer = csv.DictWriter(stream, fieldnames=fields)
+    writer.writeheader()
+    writer.writerows(rows)
+print(f"{{target}}: {{len(rows)}} rows from {{len(list(root.glob('B*/**/crosscheck.csv')))}} sensors")
+'''
+    (job_dir / "collect_results.py").write_text(script)
 
 
 def main():
-    config_file = sys.argv[1]
-    with open(config_file) as fh:
-        cfg = yaml.safe_load(fh)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("config")
+    parser.add_argument(
+        "--jobs", metavar="NAME",
+        help="override the CERN HTCondor batch name from job_folder",
+    )
+    args = parser.parse_args()
+    config_file = Path(args.config)
+    with config_file.open() as stream:
+        cfg = yaml.safe_load(stream)
+    mode = cfg.get("mode", "ihep").lower()
+    if mode not in ("ihep", "cern"):
+        raise SystemExit("cluster mode must be 'ihep' or 'cern' in config.yaml")
+    if args.jobs is not None and mode != "cern":
+        raise SystemExit("--jobs is supported only when mode: cern")
+    if args.jobs is not None and not args.jobs.strip():
+        raise SystemExit("--jobs NAME must not be empty")
+
     main_path = Path(cfg["main_path"])
     macro = main_path / cfg["macro"]
+    if not macro.is_file():
+        raise SystemExit(f"ROOT macro not found: {macro}")
+    plan = build_plan(cfg)
+    if not plan:
+        raise SystemExit("no runnable sensors in plan")
 
-    plan, tn = build_plan(cfg)
-    print(f"Plan: {len(plan)} sensors -> {CONDOR_DIR}")
-    CONDOR_DIR.mkdir(exist_ok=True)
-
-    with open(CONDOR_DIR / "sensors.list", "w") as fh:
-        for label, tp, ime_abs, needle_abs in plan:
-            fh.write(f"{label}|{tp}|{ime_abs}|{needle_abs}\n")
-
-    job_sh = JOB_SH.format(job_dir=CONDOR_DIR, macro=macro, tn=tn)
-    (CONDOR_DIR / "job.sh").write_text(job_sh)
-    (CONDOR_DIR / "root_env.sh").write_text(ROOT_ENV_SH)
-    (CONDOR_DIR / "submit_all.sh").write_text(SUBMIT_SH)
-    (CONDOR_DIR / "collect_results.py").write_text(COLLECT_PY)
-    for name in ("job.sh", "submit_all.sh", "root_env.sh"):
-        os.chmod(CONDOR_DIR / name, 0o755)
-    print("Files:", sorted(p.name for p in CONDOR_DIR.iterdir()))
+    job_folder = cfg.get("job_folder", "HGTD-analysis/SQC/jobs")
+    job_dir = main_path / job_folder
+    jobs_name = args.jobs if args.jobs is not None else Path(job_folder).name
+    if mode == "cern" and not jobs_name:
+        raise SystemExit("job_folder must have a final directory name")
+    output_root = main_path / cfg["output_path"]
+    job_dir.mkdir(parents=True, exist_ok=True)
+    write_plan_manifest(plan, output_root)
+    if mode == "ihep":
+        generate_ihep(job_dir, plan, cfg, macro, output_root)
+    else:
+        generate_cern(job_dir, plan, cfg, macro, output_root, jobs_name)
+    generate_collector(job_dir, output_root)
+    for name in ("job.sh", "submit_all.sh", "collect_results.py"):
+        (job_dir / name).chmod(0o755)
+    print(f"Generated {mode} package: {job_dir}")
+    print(f"Tasks: {len(plan)}; results: {output_root}")
 
 
 if __name__ == "__main__":

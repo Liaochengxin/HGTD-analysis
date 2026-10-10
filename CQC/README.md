@@ -259,6 +259,42 @@ If the IME yields are already arranged as a per-wafer results directory, use
 that directory for the second collector's input. Both collector invocations
 must use the same batch's wafers so the summary compares like-for-like.
 
+## Plot Vbd average and RMS
+
+Use `plot_vbd_avg_rms.py` to collect sensor Vbd averages and RMS values and
+make two separate ATLAS-style plots marked `HGTD Internal`. The script detects
+CQC or SQC format from the input path, which must include the corresponding
+`CQC_results` or `SQC_results` directory name. From the repository root, run
+it with the analysis virtual environment:
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
+  CQC_results/CERN/2nd_batch_results_IHEP
+```
+
+For SQC results, pass the SQC batch directory instead:
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
+  SQC_results/CERN/1nd_batch
+```
+
+By default, CSV summaries and the two plots are written to
+`<input directory>/vbd_summary/`. Use `-o` or `--output` to choose another
+output directory:
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
+  CQC_results/CERN/2nd_batch_results_IHEP \
+  --output HGTD-analysis/CQC/plots/2nd_batch_results_IHEP
+```
+
+The output directory contains `vbd_avg_rms.csv` with per-sensor values,
+`vbd_avg_rms_stats.csv` with group statistics, and separate
+`vbd_average.png` and `vbd_rms.png` plots. CQC uses `Vbd_Average` and
+`Vbd_Rms` from each wafer's `sensorYield.csv`; SQC uses `Mean` and `RMS` from
+each sensor's `crosscheck.csv` and keeps the ProbeCard/Needle groups separate.
+
 ## Package results for transfer
 
 Run post-processing first so the archive contains the per-wafer plots and CSVs

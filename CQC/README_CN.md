@@ -196,6 +196,37 @@ results/1nd_batch_25/
 
 两次 collector 必须使用同一批次的 wafer，才能进行对应比较。
 
+## 绘制 Vbd Average 和 RMS
+
+使用 `plot_vbd_avg_rms.py` 汇总 sensor 的 Vbd Average 和 RMS，并分别生成
+两张标注 `ATLAS / HGTD Internal` 的图。脚本根据输入路径中的
+`CQC_results` 或 `SQC_results` 自动识别数据格式。从仓库根目录通过分析虚拟环境运行：
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
+  CQC_results/CERN/2nd_batch_results_IHEP
+```
+
+处理 SQC 时，将输入目录换成 SQC batch 目录：
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
+  SQC_results/CERN/1nd_batch
+```
+
+默认在输入目录下的 `vbd_summary/` 写入结果。用 `-o` 或 `--output` 可以指定其他输出目录：
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
+  CQC_results/CERN/2nd_batch_results_IHEP \
+  --output HGTD-analysis/CQC/plots/2nd_batch_results_IHEP
+```
+
+输出目录包含逐 sensor 明细 `vbd_avg_rms.csv`、分组统计
+`vbd_avg_rms_stats.csv`，以及独立的 `vbd_average.png` 和 `vbd_rms.png`。
+CQC 从每片 wafer 的 `sensorYield.csv` 读取 `Vbd_Average` 和 `Vbd_Rms`；
+SQC 从每个 sensor 的 `crosscheck.csv` 读取 `Mean` 和 `RMS`，并保留 ProbeCard、Needle 等组别。
+
 ## 打包传输结果
 
 先完成后处理，再将每片晶圆的图表、CSV、IHEP/IME grade 表和 cross-check 一并压缩。从仓库根目录执行：
