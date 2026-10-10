@@ -1,14 +1,37 @@
 #!/usr/bin/env python3
-"""Write IHEP and IME rows for sensors with different final statuses."""
+"""Write IHEP and IME rows for sensors with different final statuses.
 
+Usage:
+    compare_sensor_yields.py IHEP_DIR --ime IME_DIR [--sample SAMPLE_DIR]
+
+IHEP_DIR holds the per-wafer analysis results (*/sensorYield*.csv); IME_DIR
+holds the vendor per-wafer yields (typically the CQC_sample batch tree).
+sensor_yield_differences.csv is written into IHEP_DIR. The wafer -> serial
+mapping is read from the 20WS* subdirectories shipped with each wafer; pass
+--sample when IME_DIR does not contain them.
+"""
+
+import argparse
 import csv
 from pathlib import Path
 
 
-MAIN_PATH = Path("/Users/liao./cernbox/public/HGTD_sensor")
-IME_PATH = MAIN_PATH / "CQC_sample/2nd_batch_95"
-IHEP_PATH = MAIN_PATH / "HGTD-analysis/CQC/results"
-WAFER_PARTS_PATH = IME_PATH / "wafer_parts_template.csv"
+MAIN_PATH = Path("/eos/user/l/liaoc/public/HGTD_sensor")
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("ihep_dir", help="directory holding the per-wafer IHEP results")
+parser.add_argument(
+    "--ime", required=True, help="directory holding the per-wafer IME yields"
+)
+parser.add_argument(
+    "--sample",
+    help="sample tree for the wafer -> serial mapping (default: IME_DIR itself)",
+)
+args = parser.parse_args()
+
+IHEP_PATH = MAIN_PATH / args.ihep_dir
+IME_PATH = MAIN_PATH / args.ime
+SAMPLE_PATH = MAIN_PATH / args.sample if args.sample else IME_PATH
 OUTPUT_PATH = IHEP_PATH / "sensor_yield_differences.csv"
 
 
@@ -22,11 +45,20 @@ def find_yield_file(wafer_path):
     return next(wafer_path.glob("20WS*.csv"))
 
 
-with WAFER_PARTS_PATH.open(newline="", encoding="utf-8-sig", errors="replace") as file:
-    wafer_serials = {
-        f"B{row['batch_number']}_{int(row['serial_number'][-2:])}": row["serial_number"]
-        for row in csv.DictReader(file)
-    }
+def wafer_serial(sample_path):
+    """Serial number = the 20WS* data subfolder shipped with the wafer."""
+    return next(
+        path.name
+        for path in sorted(sample_path.iterdir())
+        if path.is_dir() and path.name.startswith("20WS")
+    )
+
+
+wafer_serials = {
+    path.name: wafer_serial(path)
+    for path in sorted(SAMPLE_PATH.iterdir())
+    if path.is_dir() and path.name.startswith("B")
+}
 
 ime_yields = {}
 for wafer_path in IME_PATH.iterdir():

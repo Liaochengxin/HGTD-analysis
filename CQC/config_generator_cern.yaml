@@ -1,0 +1,20 @@
+# CERN EosSubmit mode: generates jobs/{filelist.txt, job.sh, cern_batch.sub}.
+# Only used to enumerate the wafer folders; nothing else is read in cern mode.
+# Submit files use relative paths — run condor_submit from cern_submit_dir:
+#   /eos/user/<user>/HGTD/CQC_batch  (filelist.txt, job.sh, src.tar, out/, logs/)
+main_path: /Users/liao./cernbox/public/HGTD_sensor/
+mode: cern
+wafer_folder: CQC_sample/CERN/2nd_batch_95
+config_folder: HGTD-analysis/CQC/configs
+script_folder: HGTD-analysis/CQC/jobs
+run_local: HGTD-analysis/CQC/run_local.py
+atlas_local_root_base: /cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
+python_version: 3.12.7-x86_64-el9
+root_version: 6.40.02-x86_64-el9-gcc15-opt
+venv_path: /eos/user/l/liaoc/public/HGTD_sensor/HGTD-analysis/.venv
+# EOS root holding the wafer folders (same layout as the local CQC_sample);
+# jobs read inputs from here directly via full paths.
+eos_input_dir: /eos/user/l/liaoc/public/HGTD_sensor/CQC_sample/CERN/2nd_batch_95
+# EOS dir where jobs write results directly (one <wafer>/ subfolder each).
+eos_output_dir: /eos/user/l/liaoc/public/HGTD_sensor/HGTD-analysis/CQC/results/2nd_batch_95
+flavour: microcentury

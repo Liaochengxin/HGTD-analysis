@@ -1,19 +1,48 @@
 #!/usr/bin/env python3
-"""Collect sensor yields into A, B, and C tables."""
+"""Collect sensor yields into A, B, and C tables.
 
+Usage:
+    collect_sensor_yields.py INPUT_DIR [--sample SAMPLE_DIR] [--label LABEL]
+                           [--output OUTPUT_DIR]
+
+INPUT_DIR holds one directory per wafer (Bxx_N) with a sensorYields.csv.
+The wafer -> serial mapping is read from the 20WS* data subdirectory shipped
+with each wafer; pass --sample pointing at the matching CQC_sample batch tree
+when INPUT_DIR is an analysis-results directory without them. --label suffixes
+the output folder name (e.g. IME -> sensor_yields_by_grade_IME); the folder is
+written into INPUT_DIR unless --output gives another parent (e.g. the results
+folder, so a run on the sample tree does not pollute CQC_sample).
+"""
+
+import argparse
 import csv
-import sys
 from pathlib import Path
 
 
-MAIN_PATH = Path("/Users/liao./cernbox/public/HGTD_sensor")
-WAFER_PARTS_PATH = MAIN_PATH / "CQC_sample/2nd_batch_95/wafer_parts_template.csv"
-INPUT_PATH = MAIN_PATH / sys.argv[1]
-OUTPUT_PATH = MAIN_PATH / "HGTD-analysis/CQC/results" / (
-    "sensor_yields_by_grade_IME"
-    if INPUT_PATH.name == "2nd_batch_95"
-    else "sensor_yields_by_grade"
+MAIN_PATH = Path("/eos/user/l/liaoc/public/HGTD_sensor")
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("input_dir", help="directory holding the per-wafer results")
+# if input_dir is results fold, please add sample option to point to the matching CQC_sample batch tree for the wafer -> serial mapping
+parser.add_argument(
+    "--sample",
+    help="matching CQC_sample batch tree for the wafer -> serial mapping "
+    "(default: INPUT_DIR itself)",
 )
+parser.add_argument(
+    "--label", help="suffix for the output folder, e.g. IME (default: none)"
+)
+parser.add_argument(
+    "--output",
+    help="parent directory for the sensor_yields_by_grade* output folder "
+    "(default: INPUT_DIR itself)",
+)
+args = parser.parse_args()
+
+INPUT_PATH = MAIN_PATH / args.input_dir
+SAMPLE_PATH = MAIN_PATH / args.sample if args.sample else INPUT_PATH
+OUTPUT_PARENT = MAIN_PATH / args.output if args.output else INPUT_PATH
+OUTPUT_PATH = OUTPUT_PARENT / f"sensor_yields_by_grade{'_' + args.label if args.label else ''}"
 
 
 def find_yield_file(wafer_path):
@@ -26,11 +55,20 @@ def find_yield_file(wafer_path):
     return next(wafer_path.glob("20WS*.csv"))
 
 
-with WAFER_PARTS_PATH.open(newline="", encoding="utf-8-sig", errors="replace") as file:
-    wafer_serials = {
-        f"B{row['batch_number']}_{int(row['serial_number'][-2:])}": row["serial_number"]
-        for row in csv.DictReader(file)
-    }
+def wafer_serial(sample_path):
+    """Serial number = the 20WS* data subfolder shipped with the wafer."""
+    return next(
+        path.name
+        for path in sorted(sample_path.iterdir())
+        if path.is_dir() and path.name.startswith("20WS")
+    )
+
+
+wafer_serials = {
+    path.name: wafer_serial(path)
+    for path in sorted(SAMPLE_PATH.iterdir())
+    if path.is_dir() and path.name.startswith("B")
+}
 
 tables = {"A": [], "B": [], "C": []}
 fieldnames = None
