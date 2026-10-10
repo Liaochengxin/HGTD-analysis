@@ -1,221 +1,214 @@
-# HGTD Sensor IV Analysis
+# CQC 晶圆 IV 分析流程
 
 > English version: [README.md](README.md)
 
-本目录使用 ROOT 宏 `Card52_v3.C` 分析晶圆的 15×1 IV 测试数据。
+本流程使用 ROOT 宏 `Card52_v3.C` 分析已解压的晶圆 IV 曲线，生成 sensor grade 和图表；随后汇总 IHEP 与 IME 的 grade，并将结果打包传输。
 
-## 1. 数据结构
+## 流程概览
 
-`CQC_sample/` 按提交地点分组：`CQC_sample/CERN/{pilot_batch_17, 1nd_batch_100, 2nd_batch_95}`（CERN lxplus 批处理）和 `CQC_sample/IHEP/1nd_batch_25`（IHEP 集群，B34/B35 batch）。每个 batch 目录下是各晶圆目录（2nd batch 分为 B23、B31、B33 和 B36 四个 batch）。
+1. 按下方目录结构准备输入数据，并解压目标 batch 的 ZIP。
+2. 选择本地、IHEP 集群或 CERN 集群模式运行分析。
+3. 等待所有晶圆作业完成，确认每片晶圆都有 `sensorYield.csv`。
+4. 分别整理 IHEP 和 IME 的 grade，再生成两者的 grade 数量 cross-check。
+5. 将结果目录压缩成 ZIP 后传输。
 
-每个晶圆目录通常包含：
+## 输入目录结构
 
-```text
-20WS0013300017.zip                 # 原始 ZIP，始终保留
-20WS0013300017/                    # 解压后的 780 个 IV CSV（目录名 = ZIP 名）
-sensorYields.csv                   # 已有的分析结果（统一命名）
-sensor_attributes_template_*.CSV   # Sensor 序列号和晶圆位置
-sensor_parts_template_*.CSV        # Sensor 序列号和 batch
-parttree_sensor_*.CSV               # Wafer 与 Sensor 的父子关系
-```
-
-解压由 `scirpt/unzip_cqc.py` 统一完成（原地解压，保留 ZIP，幂等）：
-
-```bash
-python3 HGTD-analysis/scirpt/unzip_cqc.py
-```
-
-本目录的分析代码只读取已解压的 CSV，不做任何解压。
-
-### 原始 ZIP
-
-每个 ZIP 包含一片晶圆的 780 条 IV 曲线：
+`wafer_folder` 应指向一个 batch 目录。目录中每片晶圆对应一个子目录，batch 根目录包含温度表。例如：
 
 ```text
-52 个 sensor × 每个 sensor 15 列 = 780 个 CSV
+CQC_sample/
+└── IHEP/
+    └── 1nd_batch_25/                         # wafer_folder
+        ├── wafer_temperature_template.csv     # 分析必需
+        ├── B34_10/
+        │   ├── 20WS0013400010.zip             # 原始压缩包
+        │   ├── 20WS0013400010/                 # 解压后的输入目录，分析必需
+        │   │   ├── 20WS20340010-1.csv
+        │   │   ├── 20WS20340010-2.csv
+        │   │   └── ...                         # 共 780 个 IV CSV
+        │   ├── sensor_attributes_template_20WS0013400010.CSV
+        │   ├── sensor_parts_template_20WS0013400010.CSV
+        │   ├── parttree_sensor_20WS0013400010.CSV
+        │   └── sensorYields.csv                # 已有的 IME/vendor 结果，
+        │                                       # 仅用于 cross-check
+        ├── B34_11/
+        │   └── ...                             # 每片晶圆布局相同
+        └── ...
 ```
 
-原始文件格式为：
+每片晶圆必须有一个以 `20WS...` 序列号命名的解压目录；配置生成器会跳过没有该目录的晶圆。目录中是每个 sensor 每个测试列的 IV CSV：52 个 sensor × 15 列，共 780 个文件。ROOT 分析需要这些 CSV 和 batch 根目录的温度表。metadata CSV 随样本保留，用于 sensor/wafer 信息关联；已有 `sensorYields.csv` 用作 IME/vendor grade 输入。原始 ZIP 会保留。
 
-```csv
-Voltage(V),Current(A)
-0.0,1.43e-09
-2.0,6.375e-09
-```
-
-文件名类似：
-
-```text
-20WS2033001701-1.csv
-```
-
-其中 `01` 是 Sensor 编号，`-1` 是测试列编号。
-
-### 晶圆级总表
-
-`CERN/2nd_batch_95/` 根目录下的三个文件分别记录：
-
-- `wafer_temperature_template.csv`：每片晶圆的测试温度；
-- `wafer_attributes_template.csv`：good sensor 数量、厚度、电阻率和外观等晶圆属性；
-- `wafer_parts_template.csv`：晶圆序列号、batch、生产日期和备注。
-
-## 2. 环境
-
-需要：
-
-- ROOT（本机已验证 ROOT 6.40）；
-- Python 3；
-- PyYAML：
+从仓库根目录运行以下命令，并将参数替换为要处理的 batch 路径：
 
 ```bash
-pip install pyyaml
+python3 HGTD-analysis/scirpt/unzip_cqc.py \
+  CQC_sample/IHEP/1nd_batch_25
 ```
 
-## 3. 生成每片晶圆的配置
+脚本会递归搜索指定 batch 目录，在 ZIP 所在晶圆目录旁解压，并跳过已解压的 ZIP。其他示例：`CQC_sample/CERN/2nd_batch_95`。新 batch 也应保持 batch 根目录 / wafer 目录 / 序列号子目录的结构。传输到 IHEP 时，如果已包含解压目录，可以不传原始 ZIP。
 
-每个运行目标一份生成器 yaml，按分析运行的位置选择，批次或布局变化后重新生成：
+## Python 和 ROOT 环境
 
-| yaml | mode | 运行目标 |
-|---|---|---|
-| `config_generator_local.yaml` | `local` | 本机顺序运行 |
-| `config_generator.yaml` | `ihep` | IHEP 集群，`hep_sub` |
-| `config_generator_cern.yaml` | `cern` | lxplus EosSubmit，第二批 |
-| `config_generator_cern_1st.yaml` | `cern` | lxplus EosSubmit，第一批 |
-| `config_generator_cern_pilot.yaml` | `cern` | lxplus EosSubmit，pilot 批 |
-
-本地运行编辑 `config_generator_local.yaml`：
-
-```yaml
-main_path: /path/to/HGTD_sensor
-mode: local
-wafer_folder: CQC_sample/IHEP/1nd_batch_25
-config_folder: HGTD-analysis/CQC/configs
-script_folder: HGTD-analysis/CQC/jobs
-run_local: HGTD-analysis/CQC/run_local.py
-temp_file: CQC_sample/IHEP/1nd_batch_25/wafer_temperature_template.csv
-root_macro: HGTD-analysis/CQC/Card52_v3.C
-output_path: HGTD-analysis/CQC/results
-```
-
-除 `main_path` 外，其余路径均相对于 `main_path`，因此整个代码树放在哪里都可以——把 `main_path` 指向本仓库的根目录即可，其余不用动。各路径键的含义：
-
-- `main_path` — 运行生成器的机器上 HGTD_sensor 代码树根目录的绝对路径（本地磁盘、集群 home 等）；
-- `wafer_folder` — 存放各晶圆目录的 batch 目录，如 `CQC_sample/IHEP/1nd_batch_25` 或 `CQC_sample/CERN/2nd_batch_95`（相对于 `main_path`）；
-- `temp_file` — 该 batch 的 `wafer_temperature_template.csv`，位于 batch 根目录、与晶圆目录同级（相对于 `main_path`）；换批次时把 `wafer_folder` 和 `temp_file` 一起改；
-- `config_folder` / `script_folder` / `log_folder` / `output_path` — 生成的配置、提交脚本、作业日志、结果的存放位置（相对于 `main_path`）。
-
-cern 模式是例外：作业直接读写 EOS，`eos_input_dir` / `eos_output_dir` / `venv_path` 是 `/eos/user/<user>/...` 形式的绝对路径，生成时直接写进 `job.sh`。
-
-执行：
+从仓库根目录创建并激活虚拟环境，然后安装仓库 requirements 中的 Python 依赖：
 
 ```bash
-python3 HGTD-analysis/CQC/generate_configs.py HGTD-analysis/CQC/config_generator_local.yaml
+python3 -m venv HGTD-analysis/.venv
+source HGTD-analysis/.venv/bin/activate
+python -m pip install --upgrade pip
+python3 -m pip install -r HGTD-analysis/requirements.txt
 ```
 
-脚本会遍历 `wafer_folder` 下的晶圆目录，定位其中已解压的数据子目录（`20WS*`），并生成：
+在激活的虚拟环境中运行后续命令。完成后执行 `deactivate` 退出环境。ROOT 是系统依赖，不包含在 `requirements.txt` 中；请确保 `root` 命令可用（CERN 作业使用 ROOT 6.40）。
 
-```text
-HGTD-analysis/CQC/configs/config_B33_17.yaml
-HGTD-analysis/CQC/configs/config_B23_17.yaml
-...
-```
+## 选择运行模式
 
-## 4. 本地运行
+| 模式 | 运行位置 | 提交方式 | 结果位置 |
+|---|---|---|---|
+| Local | 本地工作站 | `run_all.sh` 顺序运行各片晶圆 | `HGTD-analysis/CQC/results/<wafer>/` |
+| IHEP cluster | IHEP 共享文件系统 | 一次提交一个 `hep_sub` 作业簇，每个 ProcId 对应一片晶圆 | 共享文件系统上的 `HGTD-analysis/CQC/results/<wafer>/` |
+| CERN cluster | CERN HTCondor EosSubmit | 使用 `condor_submit`，每片晶圆一个作业；输入和输出直接读写 EOS | 所选配置中 `eos_output_dir/<wafer>/` |
 
-### 单片运行
+仓库中已跟踪的生成器配置如下：
+
+| 配置文件 | 模式和样本 |
+|---|---|
+| `config_generator_local.yaml` | Local；当前指向 IHEP `1nd_batch_25` |
+| `config_generator.yaml` | IHEP cluster；当前指向 IHEP `1nd_batch_25` |
+| `config_generator_cern.yaml` | CERN cluster；CERN `2nd_batch_95` |
+
+切换 batch 时，同时检查并更新 `wafer_folder` 和 `temp_file`。Local 和 IHEP 模式还需将 `main_path` 设置为运行机器上的仓库绝对路径；输出、配置、作业脚本和日志路径相对于 `main_path`。CERN 模式中的 `eos_input_dir`、`eos_output_dir` 和 `venv_path` 是写入生成作业脚本的绝对 EOS 路径，按实际 CERN EOS 位置设置。
+
+从仓库根目录生成配置和提交文件，按运行模式选择配置文件：
 
 ```bash
-python3 HGTD-analysis/CQC/run_local.py HGTD-analysis/CQC/configs/config_B33_17.yaml
+python3 HGTD-analysis/CQC/generate_configs.py \
+  HGTD-analysis/CQC/config_generator_local.yaml
 ```
 
-`run_local.py` 会自动：
+生成器会扫描 `wafer_folder` 下含有已解压 `20WS...` 子目录的晶圆目录。生成配置前先解压目标 batch。
 
-1. 读取温度表中的对应温度；
-2. 直接从解压好的数据子目录读取 CSV；
-3. 调用 `Card52_v3.C`；
-4. 按 Sensor 整理图片结果。
+## 本地运行
 
-运行全部晶圆：
+生成 Local 配置后，顺序运行所有晶圆：
 
 ```bash
 bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
-本地模式下，`run_all.sh` 会按顺序运行全部生成的配置。
-
-## 5. 高能所 IHEP 批量提交
-
-在批量提交之前，你需要把sample传输到ihep cluster上，如果你使用mac，可以用下面命令，否则会把mac打包数据也传输到clutser上, 如果是windows就用普通的打包命令就好了。注意排除 zip（解压后的 CSV 已随目录树就位）：
+单独运行一片晶圆：
 
 ```bash
-tar czvf target.tar.gz --no-xattrs --no-mac-metadata --exclude='*.zip' /path/to/source
+python3 HGTD-analysis/CQC/run_local.py \
+  HGTD-analysis/CQC/configs/config_B34_2.yaml
 ```
 
-提交方式参考[高能所 HTCondor/HepJob 文档](http://afsapply.ihep.ac.cn/cchelp/zh/local-cluster/jobs/HTCondor/)。
+## IHEP 集群提交
 
-把 `config_generator.yaml` 中的模式改为：
-
-```yaml
-mode: ihep
-```
-
-并把 `main_path` 改成计算节点可访问的共享路径，例如：
-
-```yaml
-main_path: /cefs/your/path/HGTD_sensor
-```
-
-重新生成：
+先将仓库和样本传到 IHEP worker 可访问的共享路径。macOS 创建 tar 包时可排除扩展属性和原始 ZIP（作业读取的是解压后的 CSV）：
 
 ```bash
-python3 HGTD-analysis/CQC/generate_configs.py HGTD-analysis/CQC/config_generator.yaml
+tar czf HGTD_sensor.tar.gz --no-xattrs --no-mac-metadata \
+  --exclude='*.zip' -C /path/to/parent HGTD_sensor
 ```
 
-IHEP 模式会生成一个 `HGTD-analysis/CQC/jobs/run_all.sh`。该脚本只执行一次 `hep_sub`，通过 `-n 95` 创建一个包含 95 个 ProcId 的作业簇：
+在 IHEP 上解包后，将 `config_generator.yaml` 中的 `main_path` 设为共享路径，并检查 `wafer_folder`、`temp_file` 是否指向目标 batch。然后生成并提交：
 
 ```bash
+python3 HGTD-analysis/CQC/generate_configs.py \
+  HGTD-analysis/CQC/config_generator.yaml
 bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
-每个 ProcId 对应一片晶圆，脚本内部通过 wafer 数组映射到相应的 `config_Bxx_xx.yaml`。标准输出和错误日志写入：
+IHEP 模式为发现的每片晶圆创建一个 ProcId。生成的脚本将 ProcId 映射到对应配置。使用 `hep_q -u` 查看队列；标准输出和错误日志位于配置的 `log_folder`，文件名为 `job_<ProcId>.out` 和 `job_<ProcId>.err`。
 
-```text
-HGTD-analysis/CQC/job_logs/job_0.out
-HGTD-analysis/CQC/job_logs/job_0.err
-...
-```
+## CERN 集群提交
 
-查询作业：
+CERN 模式通过 EOS 绝对路径读写输入和结果。登录节点上的生成器使用 `config_generator_cern.yaml` 生成 `filelist.txt`、`job.sh`、`cern_batch.sub` 和 `src.tar`。`src.tar` 是分析宏和 runner 的代码快照。将这些生成文件传到对应 campaign 的 EOS 提交目录，并确保该目录有 `out/` 和 `logs/` 子目录，再从提交目录运行：
 
 ```bash
-hep_q -u
+cd /eos/user/<user>/HGTD/CQC_batch
+condor_submit cern_batch.sub
 ```
 
-## 6. 输出结构
+每片晶圆对应一个作业。作业从 `eos_input_dir` 读取已解压 CSV 和温度表，并将结果写到 `eos_output_dir/<wafer>/`。检查 Condor 队列以及提交目录中的 `.out`、`.err` 文件。如果 `Card52_v3.C` 或 `run_local.py` 有更新，重新生成并传输 `src.tar`；已提交作业使用提交时收到的代码快照。
 
-输出目录为：
+## 结果目录
+
+每个成功的晶圆作业生成类似以下目录：
 
 ```text
-HGTD-analysis/CQC/results/B33_17/
+results/<batch>/<wafer>/
 ├── sensorYield.csv
 ├── VbdMap.png
 ├── LKGnoMap.png
 ├── IV_Full.png
 ├── Sensor_Grade_Map.png
 ├── run.log
-├── sensor_1/
-│   ├── VMap_Sensor_1.png
-│   ├── BVHist_Sensor_1.png
-│   ├── Leakage_Current_Sensor_1.png
-│   ├── Leakage_Current_Full_Sensor_1.png
-│   └── IDist_Sensor_1.png
-└── sensor_52/
-    └── ...
+└── sensor_1/ ... sensor_52/
 ```
 
-不带 Sensor 编号的全局结果文件放在晶圆目录根部；带 Sensor 编号的 5 张图放入对应的 `sensor_N` 目录。
+当前输出汇总文件名为 `sensorYield.csv`；汇总脚本也兼容历史文件名 `sensorYields.csv` 和以序列号命名的 CSV。开始后处理前，检查作业日志并确认每片晶圆的汇总 CSV 均已生成。CERN 的 batch 结果目录由 `eos_output_dir` 指定；Local 和 IHEP 可通过生成器配置中的 `output_path` 设置 batch 专属目录。
 
-CERN 批处理会按批次分开保存结果：`CQC/results/1st_batch_100/<wafer>/`、
-`CQC/results/2nd_batch_95/<wafer>/` 和 `CQC/results/pilot_batch_17/<wafer>/`。
+## IHEP 与 IME yield 后处理
 
-分析代码不再产生解压目录；结果目录已加入 `.gitignore`。
+`collect_sensor_yields.py` 为每个 sensor 添加 wafer 序列号和名称，并输出 `A.csv`、`B.csv`、`C.csv`。`Final_Status` 为 A 或 C 的行分别归入 A、C，其余状态归入 B。`summarize_sensor_yields.py` 再按 wafer 统计两种测试的 grade 数量，生成并排汇总表，作为 IHEP/IME 的 yield cross-check。
+
+这两个脚本当前将相对路径解析到 `/eos/user/l/liaoc/public/HGTD_sensor`（见脚本中的 `MAIN_PATH`）。请在该 EOS 仓库树上运行；若在其他位置处理数据，将脚本中的 `MAIN_PATH` 改为该仓库根目录。下面以 `HGTD-analysis/CQC/results/<batch>/` 作为结果目录。
+
+先整理 IHEP 分析结果。`--sample` 指向对应的 sample batch，用于 wafer 序列号映射；`--output` 将整理结果写入结果目录：
+
+```bash
+python3 HGTD-analysis/CQC/collect_sensor_yields.py \
+  HGTD-analysis/CQC/results/1nd_batch_25 \
+  --sample CQC_sample/IHEP/1nd_batch_25 \
+  --output HGTD-analysis/CQC/results/1nd_batch_25
+```
+
+然后从 wafer sample 目录读取 IME/vendor yields，并用 `--label IME` 避免覆盖 IHEP 表：
+
+```bash
+python3 HGTD-analysis/CQC/collect_sensor_yields.py \
+  CQC_sample/IHEP/1nd_batch_25 \
+  --sample CQC_sample/IHEP/1nd_batch_25 \
+  --label IME \
+  --output HGTD-analysis/CQC/results/1nd_batch_25
+```
+
+此示例假定 IME/vendor 的 `sensorYields.csv` 与 IHEP sample wafer 位于同一目录树。如果 vendor 文件在其他位置，将第二条命令的输入路径改为该目录，并用 `--sample` 指定对应的 wafer 映射目录。最后生成 cross-check 汇总：
+
+```bash
+python3 HGTD-analysis/scirpt/summarize_sensor_yields.py \
+  HGTD-analysis/CQC/results/1nd_batch_25
+```
+
+输出结构如下：
+
+```text
+results/1nd_batch_25/
+├── sensor_yields_by_grade/       # IHEP：A.csv、B.csv、C.csv
+├── sensor_yields_by_grade_IME/   # IME：A.csv、B.csv、C.csv
+└── yield_summary/                # IHEP 与 IME 按 wafer 和总数汇总
+    ├── A.csv
+    ├── B.csv
+    └── C.csv
+```
+
+两次 collector 必须使用同一批次的 wafer，才能进行对应比较。
+
+## 打包传输结果
+
+先完成后处理，再将每片晶圆的图表、CSV、IHEP/IME grade 表和 cross-check 一并压缩。从仓库根目录执行：
+
+```bash
+cd HGTD-analysis/CQC/results
+zip -r 1nd_batch_25_results.zip 1nd_batch_25
+```
+
+将 `1nd_batch_25` 替换为要传输的 batch 目录。ZIP 会创建在 batch 目录旁，可直接传给接收方。传输前可检查压缩包目录：
+
+```bash
+unzip -l 1nd_batch_25_results.zip
+```
+
+不要将 ZIP 放在待压缩的 batch 目录内，以免把压缩包本身再次加入归档。

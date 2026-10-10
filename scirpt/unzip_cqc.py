@@ -8,9 +8,11 @@
 # The .zip file itself is always kept untouched. Idempotent: skipped if the
 # target subfolder already has content.
 #
-# Usage:
-#   python3 unzip_cqc.py                 # scan CQC_sample/ near this script
-#   python3 unzip_cqc.py <dir>           # scan a custom directory (recursive)
+# Usage (from the repository root):
+#   python3 HGTD-analysis/scirpt/unzip_cqc.py
+#       Scan all batches under CQC_sample/.
+#   python3 HGTD-analysis/scirpt/unzip_cqc.py CQC_sample/IHEP/1nd_batch_25
+#       Scan only the selected batch directory (recursive).
 
 import sys
 import zipfile
