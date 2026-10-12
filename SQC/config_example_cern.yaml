@@ -1,0 +1,18 @@
+# Example config: CERN HTCondor via EosSubmit (lxplus; data, code, output on EOS).
+# Run on lxplus after inputs are at their final EOS paths:
+#   python3 HGTD-analysis/SQC/make_condor_jobs.py HGTD-analysis/SQC/config_example_cern.yaml
+#   cd HGTD-analysis/SQC/jobs_example_cern && ./submit_all.sh   # condor_submit; check with `condor_q -batch <name>`
+#   python3 collect_results.py                                  # from the generated job dir, after jobs finish
+mode: cern
+main_path: /eos/user/l/liaoc/public/HGTD_sensor/      # EOS path; workers read data and write results here
+sqc_folder: SQC_sample/1nd_batch_SQC
+cqc_folder: CQC_sample/CERN/1nd_batch_100             # update together with temp_file when changing batches
+cqc_fallback_folder: test_CQC
+temp_file: CQC_sample/CERN/1nd_batch_100/wafer_temperature_template.csv
+macro: HGTD-analysis/SQC/temp_vbdmin_cross_toIME_v2.C # frozen into source.tar at generation time
+output_path: HGTD-analysis/SQC/results/1nd_batch
+job_folder: HGTD-analysis/SQC/jobs_example_cern       # final dir name = default HTCondor batch name; override with --jobs NAME
+tn: 20.0
+atlas_local_root_base: /cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
+root_version: 6.40.02-x86_64-el9-gcc15-opt
+flavour: microcentury                                 # JobFlavour: microcentury=1h; pick the smallest that fits

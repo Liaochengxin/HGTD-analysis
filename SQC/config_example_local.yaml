@@ -1,0 +1,11 @@
+# Example config: local sequential run (workstation ROOT, no ATLAS setup).
+# Run:  python3 HGTD-analysis/SQC/run_all_sqc.py HGTD-analysis/SQC/config_example_local.yaml [--dry-run]
+# `mode`, `flavour`, `atlas_local_root_base`, `root_version` are not used locally.
+main_path: /Users/liao./cernbox/public/HGTD_sensor/   # local repository/data root; all other paths are relative to it
+sqc_folder: SQC_sample/1nd_batch_SQC                  # B*/W*_P*/SweepVoltage0 discovered directly under this batch dir
+cqc_folder: CQC_sample/CERN/1nd_batch_100             # primary extracted CQC batch (includes the temperature table)
+cqc_fallback_folder: test_CQC                         # optional older CQC tree for exact/placeholder matching
+temp_file: CQC_sample/CERN/1nd_batch_100/wafer_temperature_template.csv
+macro: HGTD-analysis/SQC/temp_vbdmin_cross_toIME_v2.C
+output_path: HGTD-analysis/SQC/results/1nd_batch      # shared result layout: Bxx/Wxx-Pxx/{crosscheck.csv,...}
+tn: 20.0                                              # needle-station temperature in degC (assumption; update if known)

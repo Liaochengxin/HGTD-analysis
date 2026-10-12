@@ -1,0 +1,18 @@
+# Example config: IHEP cluster (hep_sub, one job per sensor).
+# Run on the IHEP machine after inputs are at their final shared-filesystem paths:
+#   python3 HGTD-analysis/SQC/make_condor_jobs.py HGTD-analysis/SQC/config_example_ihep.yaml
+#   cd HGTD-analysis/SQC/jobs_example_ihep && ./submit_all.sh   # hep_sub; check with `hep_q -u`
+#   python3 collect_results.py                                  # from the generated job dir, after jobs finish
+mode: ihep
+main_path: /ihepfs/data/<user>/HGTD_sensor            # IHEP shared path visible to worker nodes
+sqc_folder: SQC_sample/1nd_batch_SQC
+cqc_folder: CQC_sample/CERN/1nd_batch_100
+cqc_fallback_folder: test_CQC
+temp_file: CQC_sample/CERN/1nd_batch_100/wafer_temperature_template.csv
+macro: HGTD-analysis/SQC/temp_vbdmin_cross_toIME_v2.C
+output_path: HGTD-analysis/SQC/results/1nd_batch      # jobs write directly to this shared path
+job_folder: HGTD-analysis/SQC/jobs_example_ihep       # generated package: sensors.list, job.sh, submit_all.sh
+tn: 20.0
+atlas_local_root_base: /cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase   # override if IHEP cvmfs path differs
+root_version: 6.40.02-x86_64-el9-gcc15-opt
+hep_sub_options: ""                                   # optional extra hep_sub arguments
