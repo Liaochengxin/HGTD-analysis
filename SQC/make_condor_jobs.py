@@ -113,32 +113,8 @@ queue label, tp, probe_tpl, needle_tpl, output_group, output_sensor from sensors
 
 
 def generate_collector(job_dir, output_root):
-    script = f'''#!/usr/bin/env python3
-import csv
-from pathlib import Path
-
-root = Path({str(output_root)!r})
-manifest_path = root / "sensor_plan.csv"
-manifest = {{}}
-if manifest_path.exists():
-    with manifest_path.open(newline="") as stream:
-        manifest = {{(row["output_group"], row["output_sensor"]): row
-                    for row in csv.DictReader(stream)}}
-rows = []
-for path in sorted(root.glob("B*/**/crosscheck.csv")):
-    with path.open(newline="") as stream:
-        key = (path.parent.parent.name, path.parent.name)
-        meta = manifest.get(key, {{}})
-        label = meta.get("label", path.parent.name)
-        rows.extend({{"label": label, "Tp": meta.get("Tp", ""), "cqc": meta.get("cqc", ""), **row}} for row in csv.DictReader(stream))
-fields = ["label", "Tp", "cqc", "Group", "Mean", "RMS", "VbdMin", "RMS/Mean", "IRatio", "LKGMin", "LKGMax", "Valid"]
-target = root / "summary_all.csv"
-with target.open("w", newline="") as stream:
-    writer = csv.DictWriter(stream, fieldnames=fields)
-    writer.writeheader()
-    writer.writerows(rows)
-print(f"{{target}}: {{len(rows)}} rows from {{len(list(root.glob('B*/**/crosscheck.csv')))}} sensors")
-'''
+    template = Path(__file__).with_name("collect_results.py").read_text()
+    script = template.replace("DEFAULT_ROOT = None", f"DEFAULT_ROOT = {str(output_root)!r}", 1)
     (job_dir / "collect_results.py").write_text(script)
 
 

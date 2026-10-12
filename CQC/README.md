@@ -182,6 +182,7 @@ Each successful wafer job creates a directory like:
 ```text
 results/<batch>/<wafer>/
 ├── sensorYield.csv
+├── <wafer>.root
 ├── VbdMap.png
 ├── LKGnoMap.png
 ├── IV_Full.png
@@ -192,6 +193,14 @@ results/<batch>/<wafer>/
 
 The output summary is named `sensorYield.csv` by current runs; the collector
 also accepts historical `sensorYields.csv` and serial-number CSV filenames.
+Each wafer ROOT file stores a `ChannelResults` TTree with one entry per
+channel, the wafer-level maps, and the `VbdMap`, `LeakageMap`, `VbdHist`, and
+`LeakageHist` objects under `Sensors/Sensor_XX/`. The tree contains
+`sensor_id`, `channel_id`, `vbd_at_test_temperature_V`,
+`vbd_corrected_20C_V`, and `leakage_current_A`. Leakage current is the
+per-channel interpolated current at the CQC probe voltage (`0.8 ×` the
+sensor's minimum Vbd at test temperature). `sensorYield.csv` remains the
+summary table.
 Review job logs and ensure the expected per-wafer summary CSVs exist before
 starting post-processing. CERN mode's `<batch>` directory is the configured
 EOS output directory; local and IHEP modes can use a batch-specific output
@@ -199,101 +208,66 @@ directory by setting `output_path` in their generator config accordingly.
 
 ## Post-process IHEP and IME yields
 
-The collector adds wafer serial/name columns and groups rows into `A.csv`,
-`B.csv`, and `C.csv`. A sensor whose final status is neither A nor C goes into
-the B table. `summarize_sensor_yields.py` then counts these grades per wafer
-for each test and writes side-by-side tables. The resulting IHEP/IME count
-difference is the yield cross-check.
-
-The scripts currently resolve relative paths from
-`/eos/user/l/liaoc/public/HGTD_sensor` (see `MAIN_PATH` in each script).
-Run them on that EOS tree, or change `MAIN_PATH` to the repository root on the
-machine doing post-processing. The examples below assume that root and a
-results layout under `HGTD-analysis/CQC/results/<batch>/`.
-
-First collect IHEP analysis results. `--sample` points to the matching sample
-tree for the wafer serial mapping; `--output` keeps the collected tables in
-the results directory:
+Relative collector, comparison and yield-summary paths remain rooted at
+`/eos/user/l/liaoc/public/HGTD_sensor`. Select a single batch with immediate
+`Bxx_wafer/` directories; `Bxx-wafer` sample names are normalized to the same
+identity. Yield tables may be named `sensorYield.csv`, `sensorYields.csv`, or
+`20WS<serial>.csv`; multiple candidates are an error. `--sample` selects the
+matching extracted `20WS...` serial directories.
 
 ```bash
 python3 HGTD-analysis/CQC/collect_sensor_yields.py \
-  HGTD-analysis/CQC/results/1nd_batch_25 \
-  --sample CQC_sample/IHEP/1nd_batch_25 \
-  --output HGTD-analysis/CQC/results/1nd_batch_25
-```
-
-Collect the IME/vendor yields from their wafer directories. Give the output a
-label so it does not overwrite the IHEP grade tables:
-
-```bash
+  CQC_results/CERN/2nd_batch_95_IHEP \
+  --sample CQC_sample/CERN/2nd_batch_95
 python3 HGTD-analysis/CQC/collect_sensor_yields.py \
-  CQC_sample/IHEP/1nd_batch_25 \
-  --sample CQC_sample/IHEP/1nd_batch_25 \
-  --label IME \
-  --output HGTD-analysis/CQC/results/1nd_batch_25
-```
-
-This example assumes the IME/vendor `sensorYields.csv` files are stored beside
-the IHEP sample wafers, as in the current IHEP batch tree. If your vendor
-yields are elsewhere, use that directory for the collector input and pass the
-matching wafer tree with `--sample`. Then make the cross-check tables:
-
-```bash
+  CQC_sample/CERN/2nd_batch_95 --label IME \
+  --output CQC_results/CERN/2nd_batch_95_IHEP
 python3 HGTD-analysis/scirpt/summarize_sensor_yields.py \
-  HGTD-analysis/CQC/results/1nd_batch_25
+  CQC_results/CERN/2nd_batch_95_IHEP
+python3 HGTD-analysis/CQC/compare_sensor_yields.py \
+  CQC_results/CERN/2nd_batch_95_IHEP \
+  --ime CQC_sample/CERN/2nd_batch_95
 ```
 
-This creates:
+The collector writes `sensor_yields_by_grade/{A,B,C}.csv` and its IME counterpart.
+Only B/B1/B2 are grouped into B; unknown statuses and duplicate identities fail.
+The summary writes `yield_summary/{A,B,C}.csv`; comparisons require matching
+wafer/sensor sets and write paired rows to `sensor_yield_differences.csv`.
+See [the current results audit](../doc/POST_PROCESSING_AUDIT_CN.md) for ROOT
+exports, SQC summaries, and the distinction between individual-pixel Vbd and
+Vbd computed from summed pixel currents.
 
-```text
-results/1nd_batch_25/
-├── sensor_yields_by_grade/       # IHEP: A.csv, B.csv, C.csv
-├── sensor_yields_by_grade_IME/   # IME: A.csv, B.csv, C.csv
-└── yield_summary/                # IHEP vs IME counts per wafer and totals
-    ├── A.csv
-    ├── B.csv
-    └── C.csv
-```
+## CQC sensor and channel Vbd plots
 
-If the IME yields are already arranged as a per-wafer results directory, use
-that directory for the second collector's input. Both collector invocations
-must use the same batch's wafers so the summary compares like-for-like.
-
-## Plot Vbd average and RMS
-
-Use `plot_vbd_avg_rms.py` to collect sensor Vbd averages and RMS values and
-make two separate ATLAS-style plots marked `HGTD Internal`. The script detects
-CQC or SQC format from the input path, which must include the corresponding
-`CQC_results` or `SQC_results` directory name. From the repository root, run
-it with the analysis virtual environment:
+Use the single entry point `plot_vbd.py`; `--level` selects both the input
+format and plotting path. For `sensor-level`, pass a CQC results directory.
+The script recursively reads each wafer's `sensorYield.csv` (also accepting
+the historical `sensorYields.csv`) and creates separate Vbd average, minimum,
+and RMS PDFs. The default output directory is
+`<input directory>/vbd_sensor_plots/`; `--output` selects another directory:
 
 ```bash
-HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
-  CQC_results/CERN/2nd_batch_results_IHEP
+HGTD-analysis/.venv/bin/python HGTD-analysis/CQC/plot_vbd.py \
+  CQC_results/CERN/2nd_batch_95_IHEP \
+  --level sensor-level \
+  --output HGTD-analysis/CQC/plots/2nd_batch_sensor_vbd
 ```
 
-For SQC results, pass the SQC batch directory instead:
+For `channel-level`, pass one wafer ROOT file. The script reads the corrected-
+to-20°C `vbd_corrected_20C_V` branch from its `ChannelResults` TTree and plots
+the Vbd distribution across channels. By default, the PDF is written beside
+the ROOT file as `<wafer>_vbd_channel-level.pdf`; `--output` takes a PDF file
+path:
 
 ```bash
-HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
-  SQC_results/CERN/1nd_batch
+HGTD-analysis/.venv/bin/python HGTD-analysis/CQC/plot_vbd.py \
+  CQC_results/CERN/2nd_batch_95_IHEP/B31_10/B31_10.root \
+  --level channel-level \
+  --output HGTD-analysis/CQC/plots/B31_10_channel_vbd.pdf
 ```
 
-By default, CSV summaries and the two plots are written to
-`<input directory>/vbd_summary/`. Use `-o` or `--output` to choose another
-output directory:
-
-```bash
-HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
-  CQC_results/CERN/2nd_batch_results_IHEP \
-  --output HGTD-analysis/CQC/plots/2nd_batch_results_IHEP
-```
-
-The output directory contains `vbd_avg_rms.csv` with per-sensor values,
-`vbd_avg_rms_stats.csv` with group statistics, and separate
-`vbd_average.png` and `vbd_rms.png` plots. CQC uses `Vbd_Average` and
-`Vbd_Rms` from each wafer's `sensorYield.csv`; SQC uses `Mean` and `RMS` from
-each sensor's `crosscheck.csv` and keeps the ProbeCard/Needle groups separate.
+The ROOT file is read with `uproot`, included in `HGTD-analysis/requirements.txt`.
+Both modes use mplhep's ATLAS style and label the plots `HGTD Internal`.
 
 ## Package results for transfer
 

@@ -140,6 +140,7 @@ condor_submit cern_batch.sub
 ```text
 results/<batch>/<wafer>/
 ├── sensorYield.csv
+├── <wafer>.root
 ├── VbdMap.png
 ├── LKGnoMap.png
 ├── IV_Full.png
@@ -148,84 +149,67 @@ results/<batch>/<wafer>/
 └── sensor_1/ ... sensor_52/
 ```
 
-当前输出汇总文件名为 `sensorYield.csv`；汇总脚本也兼容历史文件名 `sensorYields.csv` 和以序列号命名的 CSV。开始后处理前，检查作业日志并确认每片晶圆的汇总 CSV 均已生成。CERN 的 batch 结果目录由 `eos_output_dir` 指定；Local 和 IHEP 可通过生成器配置中的 `output_path` 设置 batch 专属目录。
+当前输出汇总文件名为 `sensorYield.csv`；汇总脚本也兼容历史文件名 `sensorYields.csv` 和以序列号命名的 CSV。每片 wafer 的 ROOT 文件保存 `ChannelResults` TTree、wafer 级 map，并在 `Sensors/Sensor_XX/` 下保存 `VbdMap`、`LeakageMap`、`VbdHist` 和 `LeakageHist`。`ChannelResults` 每个 channel 一条 entry，仅包含 `sensor_id`、`channel_id`、`vbd_at_test_temperature_V`、`vbd_corrected_20C_V` 和 `leakage_current_A`。Leakage current 是 CQC 算法在 probe 电压（该 sensor 测试温度下最小 Vbd 的 0.8 倍）处对该 channel 电流插值得到的值。`sensorYield.csv` 仍是 summary 表。开始后处理前，检查作业日志并确认每片晶圆的汇总 CSV 均已生成。CERN 的 batch 结果目录由 `eos_output_dir` 指定；Local 和 IHEP 可通过生成器配置中的 `output_path` 设置 batch 专属目录。
 
 ## IHEP 与 IME yield 后处理
 
-`collect_sensor_yields.py` 为每个 sensor 添加 wafer 序列号和名称，并输出 `A.csv`、`B.csv`、`C.csv`。`Final_Status` 为 A 或 C 的行分别归入 A、C，其余状态归入 B。`summarize_sensor_yields.py` 再按 wafer 统计两种测试的 grade 数量，生成并排汇总表，作为 IHEP/IME 的 yield cross-check。
-
-这两个脚本当前将相对路径解析到 `/eos/user/l/liaoc/public/HGTD_sensor`（见脚本中的 `MAIN_PATH`）。请在该 EOS 仓库树上运行；若在其他位置处理数据，将脚本中的 `MAIN_PATH` 改为该仓库根目录。下面以 `HGTD-analysis/CQC/results/<batch>/` 作为结果目录。
-
-先整理 IHEP 分析结果。`--sample` 指向对应的 sample batch，用于 wafer 序列号映射；`--output` 将整理结果写入结果目录：
-
-```bash
-python3 HGTD-analysis/CQC/collect_sensor_yields.py \
-  HGTD-analysis/CQC/results/1nd_batch_25 \
-  --sample CQC_sample/IHEP/1nd_batch_25 \
-  --output HGTD-analysis/CQC/results/1nd_batch_25
-```
-
-然后从 wafer sample 目录读取 IME/vendor yields，并用 `--label IME` 避免覆盖 IHEP 表：
+相对路径继续以 `/eos/user/l/liaoc/public/HGTD_sensor` 为基准。
+输入选择一个批次，其下直接包含 `Bxx_wafer/`；sample 中的 `Bxx-wafer`
+会统一为相同身份。支持 `sensorYield.csv`、`sensorYields.csv` 和
+`20WS<serial>.csv`，同一晶圆有多个候选表时明确报错。
 
 ```bash
 python3 HGTD-analysis/CQC/collect_sensor_yields.py \
-  CQC_sample/IHEP/1nd_batch_25 \
-  --sample CQC_sample/IHEP/1nd_batch_25 \
-  --label IME \
-  --output HGTD-analysis/CQC/results/1nd_batch_25
-```
-
-此示例假定 IME/vendor 的 `sensorYields.csv` 与 IHEP sample wafer 位于同一目录树。如果 vendor 文件在其他位置，将第二条命令的输入路径改为该目录，并用 `--sample` 指定对应的 wafer 映射目录。最后生成 cross-check 汇总：
-
-```bash
+  CQC_results/CERN/2nd_batch_95_IHEP \
+  --sample CQC_sample/CERN/2nd_batch_95
+python3 HGTD-analysis/CQC/collect_sensor_yields.py \
+  CQC_sample/CERN/2nd_batch_95 --label IME \
+  --output CQC_results/CERN/2nd_batch_95_IHEP
 python3 HGTD-analysis/scirpt/summarize_sensor_yields.py \
-  HGTD-analysis/CQC/results/1nd_batch_25
+  CQC_results/CERN/2nd_batch_95_IHEP
+python3 HGTD-analysis/CQC/compare_sensor_yields.py \
+  CQC_results/CERN/2nd_batch_95_IHEP \
+  --ime CQC_sample/CERN/2nd_batch_95
 ```
 
-输出结构如下：
+collector 输出 `sensor_yields_by_grade/{A,B,C}.csv` 及对应 IME 目录；
+仅 B/B1/B2 合并为 B，未知状态和重复身份报错。
+支持只有 `Sensor,Final_Status` 的 vendor 表，缺失的物理指标保持为空。
+summary 输出 `yield_summary/{A,B,C}.csv`，比较输出成对的
+`sensor_yield_differences.csv`，两侧 wafer/sensor 身份集合必须一致。
+ROOT 导出、SQC 汇总及逐像素 Vbd 与求和电流 Vbd 的区别见
+[当前 results 后处理审核](../doc/POST_PROCESSING_AUDIT_CN.md)。
 
-```text
-results/1nd_batch_25/
-├── sensor_yields_by_grade/       # IHEP：A.csv、B.csv、C.csv
-├── sensor_yields_by_grade_IME/   # IME：A.csv、B.csv、C.csv
-└── yield_summary/                # IHEP 与 IME 按 wafer 和总数汇总
-    ├── A.csv
-    ├── B.csv
-    └── C.csv
-```
+## CQC 的 sensor 和 channel Vbd 图
 
-两次 collector 必须使用同一批次的 wafer，才能进行对应比较。
-
-## 绘制 Vbd Average 和 RMS
-
-使用 `plot_vbd_avg_rms.py` 汇总 sensor 的 Vbd Average 和 RMS，并分别生成
-两张标注 `ATLAS / HGTD Internal` 的图。脚本根据输入路径中的
-`CQC_results` 或 `SQC_results` 自动识别数据格式。从仓库根目录通过分析虚拟环境运行：
+使用统一入口 `plot_vbd.py`，由 `--level` 选择输入格式和绘图流程。
+`sensor-level` 输入 CQC results 目录，递归读取每片 wafer 的
+`sensorYield.csv`（兼容历史文件名 `sensorYields.csv`），分别绘制 Vbd
+average、minimum 和 RMS 三张 PDF。默认输出到输入目录下的
+`vbd_sensor_plots/`；`--output` 用于指定输出目录：
 
 ```bash
-HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
-  CQC_results/CERN/2nd_batch_results_IHEP
+HGTD-analysis/.venv/bin/python HGTD-analysis/CQC/plot_vbd.py \
+  CQC_results/CERN/2nd_batch_95_IHEP \
+  --level sensor-level \
+  --output HGTD-analysis/CQC/plots/2nd_batch_sensor_vbd
 ```
 
-处理 SQC 时，将输入目录换成 SQC batch 目录：
+`channel-level` 输入一片 wafer 的 ROOT 文件，从 `ChannelResults` TTree
+读取修正到 20°C 的 `vbd_corrected_20C_V`，绘制所有 channel 的 Vbd 直方图。
+默认输出为 ROOT 文件旁的 `<wafer>_vbd_channel-level.pdf`；此模式下
+`--output` 接收 PDF 文件路径：
 
 ```bash
-HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
-  SQC_results/CERN/1nd_batch
+HGTD-analysis/.venv/bin/python HGTD-analysis/CQC/plot_vbd.py \
+  CQC_results/CERN/2nd_batch_95_IHEP/B31_10/B31_10.root \
+  --level channel-level \
+  --output HGTD-analysis/CQC/plots/B31_10_channel_vbd.pdf
 ```
 
-默认在输入目录下的 `vbd_summary/` 写入结果。用 `-o` 或 `--output` 可以指定其他输出目录：
-
-```bash
-HGTD-analysis/.venv/bin/python HGTD-analysis/scirpt/plot_vbd_avg_rms.py \
-  CQC_results/CERN/2nd_batch_results_IHEP \
-  --output HGTD-analysis/CQC/plots/2nd_batch_results_IHEP
-```
-
-输出目录包含逐 sensor 明细 `vbd_avg_rms.csv`、分组统计
-`vbd_avg_rms_stats.csv`，以及独立的 `vbd_average.png` 和 `vbd_rms.png`。
-CQC 从每片 wafer 的 `sensorYield.csv` 读取 `Vbd_Average` 和 `Vbd_Rms`；
-SQC 从每个 sensor 的 `crosscheck.csv` 读取 `Mean` 和 `RMS`，并保留 ProbeCard、Needle 等组别。
+ROOT 文件由 Python 依赖 `uproot` 读取；安装 `HGTD-analysis/requirements.txt`
+后即可在分析虚拟环境运行。两种模式的图都使用 mplhep ATLAS style 并标注
+`HGTD Internal`。
 
 ## 打包传输结果
 

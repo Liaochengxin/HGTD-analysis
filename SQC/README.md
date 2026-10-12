@@ -121,8 +121,8 @@ python3 HGTD-analysis/SQC/run_all_sqc.py \
 ```
 
 Results are grouped by sensor batch number. Each sensor directory contains
-`crosscheck.csv`, `run.log`, and plots; the plan and combined summary remain at
-the `output_path` root:
+`crosscheck.csv`, `run.log`, plots, and one ROOT file named after the sensor;
+the plan and combined summary remain at the `output_path` root:
 
 ```text
 results/
@@ -197,5 +197,67 @@ histograms, overlaid I-V curves, and `crosscheck.csv`.
 fraction. The configured needle temperature `tn: 20.0` is an assumption and
 should be updated if the measured station temperature is known.
 
+Each sensor ROOT file contains two TTrees. `SQC_results` has one entry per SQC
+pad (225 entries): `pad_position` (matching the `1-<position>.csv` input),
+`vbd_corrected_20C_V`, and `leakage_current_A`. `CQC_results` stores the
+15 matched CQC channel results, one entry per channel, with `channel_id`,
+`vbd_corrected_20C_V`, and `leakage_current_A`. These values come from the CQC
+channel curves already read for that SQC calculation; Vbd is corrected to
+20°C, and leakage current is interpolated at `0.8 × ProbeCard VbdMin`. SQC pad
+leakage current in `SQC_results` is interpolated at `0.8 × Needle VbdMin`.
+Maps, distributions, and I-V plots are exported as PDF files beside the ROOT
+file.
+
 `process_perpad.C`, `run.C`, and `PlotSensorVbd_multibatches.C` are separate
 legacy plotting/summing tools; they are not part of the batch workflow above.
+
+## Plot SQC sensor and pad Vbd distributions
+
+Use the single entry point `plot_vbd.py`; `--level` selects the input and
+plotting path. For `sensor-level`, pass an SQC batch results directory. The
+script recursively reads each sensor's `crosscheck.csv`, selects only the
+`Group=Needle(inner)` row, and creates separate Vbd average (`Mean`), minimum
+(`VbdMin`), and RMS PDFs. The default output is
+`<input directory>/vbd_sensor_plots/`; pass `--output` to choose another
+output directory:
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/SQC/plot_vbd.py \
+  SQC_results/CERN/1nd_batch \
+  --level sensor-level \
+  --output HGTD-analysis/SQC/plots/1nd_batch_sensor_vbd
+```
+
+For `pad-level`, pass one sensor ROOT file. The script reads each pad's
+corrected-to-20°C `vbd_corrected_20C_V` from the `SQC_results` TTree and creates
+one histogram. By default, the PDF is written beside the ROOT file; `--output`
+takes a PDF file path:
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/SQC/plot_vbd.py \
+  HGTD-analysis/SQC/results/B06/W01-P2/W01-P2.root \
+  --level pad-level \
+  --output HGTD-analysis/SQC/plots/W01-P2_pad_vbd.pdf
+```
+
+Both modes use mplhep's ATLAS style, label the plots `HGTD Internal`, and omit
+the collision-energy label. ROOT files are read with `uproot`, included in
+`HGTD-analysis/requirements.txt`.
+
+## Summarize stored results
+
+From `/eos/user/l/liaoc/public/HGTD_sensor`, run:
+
+```bash
+python3 HGTD-analysis/SQC/collect_results.py SQC_results/CERN/1nd_batch
+python3 HGTD-analysis/SQC/collect_results.py SQC_results/CERN \
+  --output SQC_results/CERN/summary_all.csv
+```
+
+The collector uses each batch's `sensor_plan.csv`, preserves `Tp` and `Tn`,
+and adds `batch`, `output_group`, and `output_sensor` identity columns.
+It reports planned sensors without a crosscheck and fails on unplanned or
+duplicate identities. Generated job collectors use this same implementation
+and retain their configured CERN output root; their optional positional input
+can select results moved into the current `SQC_results/CERN` tree.
+See [the current results audit](../doc/POST_PROCESSING_AUDIT_CN.md).

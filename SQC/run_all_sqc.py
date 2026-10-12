@@ -18,6 +18,8 @@ from pathlib import Path
 
 import yaml
 
+from collect_results import collect_summary
+
 
 def load_wafer_temps(path):
     """Map the exact CQC wafer serial number to its measured temperature."""
@@ -169,37 +171,6 @@ def macro_call(macro, task):
     return (f'{macro}({task["tp"]},{task["tn"]},'
             f'"{task["probe_tpl"]}","{task["needle_tpl"]}",'
             f'"{task["output_dir"]}/")')
-
-
-def collect_summary(output_root):
-    manifest = {}
-    manifest_path = output_root / "sensor_plan.csv"
-    if manifest_path.exists():
-        with manifest_path.open(newline="") as fh:
-            manifest = {
-                (row["output_group"], row["output_sensor"]): row
-                for row in csv.DictReader(fh)
-            }
-    rows = []
-    for crosscheck in sorted(output_root.glob("B*/**/crosscheck.csv")):
-        key = (crosscheck.parent.parent.name, crosscheck.parent.name)
-        metadata = manifest.get(key, {})
-        with crosscheck.open(newline="") as fh:
-            for row in csv.DictReader(fh):
-                rows.append({"label": metadata.get("label", crosscheck.parent.name),
-                             "Tp": metadata.get("Tp", ""),
-                             "cqc": metadata.get("cqc", ""), **row})
-    if not rows:
-        print("No crosscheck.csv files found; summary was not written.")
-        return
-    fields = ["label", "Tp", "cqc", "Group", "Mean", "RMS", "VbdMin", "RMS/Mean",
-              "IRatio", "LKGMin", "LKGMax", "Valid"]
-    summary = output_root / "summary_all.csv"
-    with summary.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"Summary: {summary} ({len(rows)} rows)")
 
 
 def write_plan_manifest(plan, output_root):

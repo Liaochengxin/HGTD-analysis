@@ -24,6 +24,10 @@
 #include <TGraph.h>
 #include <TStyle.h>
 #include <TCanvas.h>
+#include <TDirectory.h>
+#include <TFile.h>
+#include <TSystem.h>
+#include <TTree.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -31,10 +35,57 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <stdexcept>
 #include <stdlib.h>
-#include <vector>
 
 using namespace ROOT::Math;
+
+void CQCGetWaferMapOffset(int sensor, int &xOffset, int &yOffset) {
+    if (sensor >= 1 && sensor <= 4) {
+        xOffset = (sensor - 1) * 15 + 30;
+        yOffset = 0;
+    } else if (sensor >= 5 && sensor <= 10) {
+        xOffset = 15 + (10 - sensor) * 15;
+        yOffset = 15;
+    } else if (sensor >= 11 && sensor <= 18) {
+        xOffset = (sensor - 11) * 15;
+        yOffset = 30;
+    } else if (sensor >= 19 && sensor <= 26) {
+        xOffset = (26 - sensor) * 15;
+        yOffset = 45;
+    } else if (sensor >= 27 && sensor <= 34) {
+        xOffset = (sensor - 27) * 15;
+        yOffset = 60;
+    } else if (sensor >= 35 && sensor <= 42) {
+        xOffset = (42 - sensor) * 15;
+        yOffset = 75;
+    } else if (sensor >= 43 && sensor <= 48) {
+        xOffset = 15 + (sensor - 43) * 15;
+        yOffset = 90;
+    } else if (sensor >= 49 && sensor <= 52) {
+        xOffset = (52 - sensor) * 15 + 30;
+        yOffset = 105;
+    } else {
+        throw std::out_of_range("CQC sensor index must be in [1, 52]");
+    }
+}
+
+void CQCSetPositiveColorRange(TH2 *histogram) {
+    double minimum = 0.0;
+    double maximum = 0.0;
+    for (int xBin = 1; xBin <= histogram->GetNbinsX(); ++xBin) {
+        for (int yBin = 1; yBin <= histogram->GetNbinsY(); ++yBin) {
+            const double value = histogram->GetBinContent(xBin, yBin);
+            if (value <= 0.0) continue;
+            if (minimum == 0.0 || value < minimum) minimum = value;
+            if (value > maximum) maximum = value;
+        }
+    }
+    if (minimum > 0.0 && maximum > minimum) {
+        histogram->SetMinimum(minimum);
+        histogram->SetMaximum(maximum);
+    }
+}
 
 #define Sup 250 //Maxmium of histograms
 #define VSpd 0.05// Breakdown voltage variance,5%
@@ -51,6 +102,37 @@ void Card52_v3(TString addshort, double Tp){
     
     
     std::cout << "You have confirmed temperature :"<< Tp <<endl;
+
+    const bool oldAddDirectory = TH1::AddDirectoryStatus();
+    TH1::AddDirectory(kFALSE);
+
+    const TString waferName = gSystem->BaseName(gSystem->WorkingDirectory());
+    const TString rootFileName = waferName + ".root";
+    TFile rootFile(rootFileName, "RECREATE");
+    if (rootFile.IsZombie()) {
+        TH1::AddDirectory(oldAddDirectory);
+        throw std::runtime_error("Could not create ROOT output file: " + std::string(rootFileName.Data()));
+    }
+
+    TDirectory *sensorsDirectory = rootFile.mkdir("Sensors");
+    if (!sensorsDirectory) {
+        rootFile.Close();
+        TH1::AddDirectory(oldAddDirectory);
+        throw std::runtime_error("Could not create Sensors directory in ROOT output file");
+    }
+
+    int sensorID = 0;
+    int channelID = 0;
+    double vbdAtTestTemperature_V = 0.0;
+    double vbdCorrected20C_V = 0.0;
+    double leakageCurrent_A = 0.0;
+    TTree channelResults("ChannelResults", "Per-channel CQC Vbd and leakage current");
+    channelResults.SetDirectory(&rootFile);
+    channelResults.Branch("sensor_id", &sensorID, "sensor_id/I");
+    channelResults.Branch("channel_id", &channelID, "channel_id/I");
+    channelResults.Branch("vbd_at_test_temperature_V", &vbdAtTestTemperature_V, "vbd_at_test_temperature_V/D");
+    channelResults.Branch("vbd_corrected_20C_V", &vbdCorrected20C_V, "vbd_corrected_20C_V/D");
+    channelResults.Branch("leakage_current_A", &leakageCurrent_A, "leakage_current_A/D");
 
     char Jstr[3]={0};
 
@@ -126,8 +208,6 @@ void Card52_v3(TString addshort, double Tp){
 
         TH2 *h4=new TH2D("h4"," ",15,0,15,15,0,15);
         h4->SetContour(50);
-        h4->GetZaxis()->SetRangeUser(1e-9,5e-7);
-        h4->GetZaxis()->SetNdivisions(-3010);
         h4->GetXaxis()->SetRange(1,15);
         h4->GetXaxis()->SetNdivisions(-15);
         h4->GetXaxis()->SetLabelFont(42);
@@ -140,6 +220,7 @@ void Card52_v3(TString addshort, double Tp){
         h4->GetYaxis()->SetLabelFont(42);
         h4->GetYaxis()->SetTitleFont(42);
         h4->GetZaxis()->SetLabelFont(42);
+        h4->GetZaxis()->SetLabelSize(0.035);
         h4->GetZaxis()->SetTitleOffset(1.5);
         h4->GetZaxis()->SetTitleFont(42);
 
@@ -153,6 +234,9 @@ void Card52_v3(TString addshort, double Tp){
             int N = g00.GetN();
             double *x00 = g00.GetX();
             double *y00 = g00.GetY();
+
+            int xOffset, yOffset;
+            CQCGetWaferMapOffset(z, xOffset, yOffset);
             for (int k = 0; k < N; k++){
                 x00[k] = -x00[k];
                 y00[k] = -y00[k];
@@ -263,6 +347,12 @@ void Card52_v3(TString addshort, double Tp){
                     break;
                 }
             }
+            sensorID = static_cast<int>(z);
+            channelID = i;
+            vbdCorrected20C_V = VbdColumn[z-1][i-1];
+            vbdAtTestTemperature_V = vbdCorrected20C_V + (Tp - 20) * 1.1;
+            leakageCurrent_A = LKGColumn[z-1][i-1];
+            channelResults.Fill();
         }
 
         IRtoSensorC[z-1]=IMaxSensorC[z-1]/IMinSensorC[z-1];
@@ -300,8 +390,6 @@ void Card52_v3(TString addshort, double Tp){
         gPad->SetGridy(1);
         c00->SetRightMargin(0.17);
         gStyle->SetPaintTextFormat(oldFmt);
-        //c00->SaveAs(Form("VMap_Sensor_%d.pdf",z));
-        c00->SaveAs(Form("VMap_Sensor_%d.png",z));
         h1->SetTitle(" ; ; ;V_{BD} (V)");
 
         /////////////////////////////////////////// 
@@ -316,15 +404,13 @@ void Card52_v3(TString addshort, double Tp){
         /////////////////////////////////////////// 
         TCanvas *c3=new TCanvas("c3","I-V", 800,800);
         hs->Draw();
-        // c3->SaveAs(Form("BVHist_Sensor_%d.pdf",z));
-        c3->SaveAs(Form("BVHist_Sensor_%d.png",z));
+
 
         /////////////////////////////////////////// 
         TCanvas *c7=new TCanvas("c7","I-V-2", 500,500);
         gPad->SetRightMargin(0.12);
         h6->Draw();
-        //c7->SaveAs(Form("Leakage_Current_Sensor_%d.pdf",z));
-        c7->SaveAs(Form("Leakage_Current_Sensor_%d.png",z));
+
 
         ///////////////////////////////////////////
         TCanvas *c5=new TCanvas("c5","Leakage Current Full", 500,500);
@@ -333,38 +419,34 @@ void Card52_v3(TString addshort, double Tp){
         gPad->SetRightMargin(0.18);
         gPad->SetLogz();
         h4->SetStats(kFALSE);
+        CQCSetPositiveColorRange(h4);
         h4->Draw("COLZ");
-        //c5->SaveAs(Form("Leakage_Current_Full_Sensor_%d.pdf",z));
-        c5->SaveAs(Form("Leakage_Current_Full_Sensor_%d.png",z));
+
 
         VbdC[z-1]=hs->GetMean();
         RMSVbdC[z-1]=hs->GetRMS();
 
         ISensorC[z-1]=h6->GetMean();
         IRMSSensorC[z-1]=h6->GetRMS();
+
+        TDirectory *sensorDirectory = sensorsDirectory->mkdir(Form("Sensor_%02d", static_cast<int>(z)));
+        if (!sensorDirectory) {
+            rootFile.Close();
+            TH1::AddDirectory(oldAddDirectory);
+            throw std::runtime_error("Could not create sensor directory in ROOT output file");
+        }
+        sensorDirectory->cd();
+        h1->SetName("VbdMap");
+        h4->SetName("LeakageMap");
+        hs->SetName("VbdHist");
+        h6->SetName("LeakageHist");
+        h1->Write();
+        h4->Write();
+        hs->Write();
+        h6->Write();
+        rootFile.cd();
     }
     
-    //Drawing 52 leakage current diagram
-    for (int z = 1; z <= 52; z++){
-        TCanvas *c2=new TCanvas("c2","IV Full", 500,500);
-        gPad->SetRightMargin(0.15);
-        gPad->DrawFrame(0.,1e-10,260,5e-5);
-        gPad->SetLogy(1);
-
-    for (int i = 1; i < 16; i++){  
-        char Jstr[3]={0};
-        snprintf(Jstr, sizeof(Jstr), "%02d", z);
-        TString filename =addshort + Jstr;
-        TGraph* g11 = new TGraph(Form(filename+"-%d.csv",i),"%lg,%lg");
-        g11->SetLineColor(3+i);
-        g11->SetTitle(" ; ;Bias (V) ;Leakage Current (A)");
-        g11->Draw("same");
-    }
-
-    c2->SaveAs(Form("IDist_Sensor_%d.png",z));
-    }
-    
-
     //save table
     ofstream SensorYield("sensorYield.csv");
     SensorYield << "Sensor"//sensor number
@@ -416,41 +498,8 @@ void Card52_v3(TString addshort, double Tp){
     hv1->SetContour(50); 
     for (int i = 1; i <= 52; i++) {
         int xOffset, yOffset;
-        double xBase;
-
-        if (i >= 1 && i <= 4) {
-            xOffset = (i - 1) * 15 + 30;
-            yOffset = 0;
-            xBase = 0.1;
-        } else if (i >= 5 && i <= 10) {
-            xOffset = 15 + (10 - i) * 15;
-            yOffset = 15;
-            xBase = 0.1;
-        } else if (i >= 11 && i <= 18) {
-            xOffset = (i - 11) * 15;
-            yOffset = 30;
-            xBase = 0.1;
-        } else if (i >= 19 && i <= 26) {
-            xOffset = (26 - i) * 15;
-            yOffset = 45;
-            xBase = 0.1;
-        } else if (i >= 27 && i <= 34) {
-            xOffset = (i - 27) * 15;
-            yOffset = 60;
-            xBase = 0.1;
-        } else if (i >= 35 && i <= 42) {
-            xOffset = (42 - i) * 15;
-            yOffset = 75;
-            xBase = 0.1;
-        } else if (i >= 43 && i <= 48) {
-            xOffset = 15 + (i - 43) * 15;
-            yOffset = 90;
-            xBase = 0.1;
-        } else if (i >= 49 && i <= 52) {
-            xOffset = (52 - i) * 15 + 30;
-            yOffset = 105;
-            xBase = 0.1;
-        }
+        CQCGetWaferMapOffset(i, xOffset, yOffset);
+        const double xBase = 0.1;
 
         for (int j = 0; j < 15; j++) {
             for (int k = 0; k < 15; k++) {
@@ -466,6 +515,8 @@ void Card52_v3(TString addshort, double Tp){
     gPad->SetGridy(1);
     VbdmMap->SetRightMargin(0.17);
     VbdmMap->SaveAs("VbdMap.png");
+    rootFile.cd();
+    hv1->Write("WaferVbdMap");
 
     //Draw a two-dimensional leakage current distribution diagram
     TCanvas *LKGnoMap = new TCanvas("LKGnoMap", "wafer2", 800, 800);
@@ -488,41 +539,8 @@ void Card52_v3(TString addshort, double Tp){
     hi1->SetContour(50); 
     for (int i = 1; i <= 52; i++) {
         int xOffset, yOffset;
-        double xBase;
-
-        if (i >= 1 && i <= 4) {
-            xOffset = (i - 1) * 15 + 30;
-            yOffset = 0;
-            xBase = 0.1;
-        } else if (i >= 5 && i <= 10) {
-            xOffset = 15 + (10 - i) * 15;
-            yOffset = 15;
-            xBase = 0.1;
-        } else if (i >= 11 && i <= 18) {
-            xOffset = (i - 11) * 15;
-            yOffset = 30;
-            xBase = 0.1;
-        } else if (i >= 19 && i <= 26) {
-            xOffset = (26 - i) * 15;
-            yOffset = 45;
-            xBase = 0.1;
-        } else if (i >= 27 && i <= 34) {
-            xOffset = (i - 27) * 15;
-            yOffset = 60;
-            xBase = 0.1;
-        } else if (i >= 35 && i <= 42) {
-            xOffset = (42 - i) * 15;
-            yOffset = 75;
-            xBase = 0.1;
-        } else if (i >= 43 && i <= 48) {
-            xOffset = 15 + (i - 43) * 15;
-            yOffset = 90;
-            xBase = 0.1;
-        } else if (i >= 49 && i <= 52) {
-            xOffset = (52 - i) * 15 + 30;
-            yOffset = 105;
-            xBase = 0.1;
-        }
+        CQCGetWaferMapOffset(i, xOffset, yOffset);
+        const double xBase = 0.1;
 
         for (int j = 0; j < 15; j++) {
             for (int k = 0; k < 15; k++) {
@@ -534,11 +552,14 @@ void Card52_v3(TString addshort, double Tp){
     }
     gPad->SetLogz();
     hi1->SetStats(kFALSE);
+    CQCSetPositiveColorRange(hi1);
     hi1->Draw("COLZ");
     gPad->SetGridx(1);
     gPad->SetGridy(1);
     LKGnoMap->SetRightMargin(0.17);
     LKGnoMap->SaveAs("LKGnoMap.png");
+    rootFile.cd();
+    hi1->Write("WaferLeakageMap");
 
     TCanvas *c2full = new TCanvas("c2full", "IV Full", 8000, 4500);
     c2full->Divide(13, 4);
@@ -579,25 +600,8 @@ void Card52_v3(TString addshort, double Tp){
     // Draw the grid colours and number labels for each sensor area.
     for (int i = 1; i <= 52; i++) {
         int xOffset, yOffset;
+        CQCGetWaferMapOffset(i, xOffset, yOffset);
         double xBase = 0.1;
-
-        if (i >= 1 && i <= 4) {
-            xOffset = (i - 1) * 15 + 30; yOffset = 0;
-        } else if (i >= 5 && i <= 10) {
-            xOffset = 15 + (10 - i) * 15; yOffset = 15;
-        } else if (i >= 11 && i <= 18) {
-            xOffset = (i - 11) * 15; yOffset = 30;
-        } else if (i >= 19 && i <= 26) {
-            xOffset = (26 - i) * 15; yOffset = 45;
-        } else if (i >= 27 && i <= 34) {
-            xOffset = (i - 27) * 15; yOffset = 60;
-        } else if (i >= 35 && i <= 42) {
-            xOffset = (42 - i) * 15; yOffset = 75;
-        } else if (i >= 43 && i <= 48) {
-            xOffset = 15 + (i - 43) * 15; yOffset = 90;
-        } else if (i >= 49 && i <= 52) {
-            xOffset = (52 - i) * 15 + 30; yOffset = 105;
-        }
 
         // Determining the background colour
         int color = kGray;
@@ -631,4 +635,11 @@ void Card52_v3(TString addshort, double Tp){
         text->SetTextSize(0.025);
     }
     gradeMap->SaveAs("Sensor_Grade_Map.png");
+
+    rootFile.cd();
+    channelResults.Write();
+    channelResults.SetDirectory(nullptr);
+    rootFile.Close();
+    TH1::AddDirectory(oldAddDirectory);
+    std::cout << "Wrote ROOT output: " << rootFileName << std::endl;
 }

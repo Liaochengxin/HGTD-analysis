@@ -7,9 +7,12 @@
 #include <TGraph.h>
 #include <TStyle.h>
 #include <TCanvas.h>
+#include <TFile.h>
 #include <TGaxis.h>
+#include <TSystem.h>
 #include <TText.h>
 #include <TROOT.h>
+#include <TTree.h>
 
 #include <fstream>
 #include <iostream>
@@ -27,14 +30,25 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
                                 TString addIHEP = "/mnt/d/HGTD/B36/W3_P2/SweepVoltage0/1-%d.csv",       //Needle IHEP Huairou
                                 TString out = "/mnt/d/HGTD/per_pad_2nd/B36/W3_P2/")
 {
+    gSystem->mkdir(out, kTRUE);
+
     // ---------- 0. 存储 ----------
     const int NProbe = 15;
     const int NNeedle = 225;
 
     double ProbeVbd[NProbe + 1] = { 0 };   // 1..15
+    bool ProbeVbdValid[NProbe + 1] = { false };
     double ProbeLKG[NProbe + 1] = { 0 };
     double NeedleVbd[NNeedle + 1] = { 0 };   // 1..225
     double NeedleLKG[NNeedle + 1] = { 0 };
+
+    int padPosition = 0;
+    double padVbd20C_V = 0.0;
+    double padLeakageCurrent_A = 0.0;
+    TTree padResults("SQC_results", "SQC per-pad Vbd and leakage current");
+    padResults.Branch("pad_position", &padPosition, "pad_position/I");
+    padResults.Branch("vbd_corrected_20C_V", &padVbd20C_V, "vbd_corrected_20C_V/D");
+    padResults.Branch("leakage_current_A", &padLeakageCurrent_A, "leakage_current_A/D");
 
     double ProbeVbdMin = 1e3;
     double ProbeVbdMin20d = 1e3;
@@ -59,6 +73,7 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
         TGraph* g = new TGraph(Form(addIME, i), "%lg,%lg");
         int N = g->GetN();
         if (!N) { delete g; continue; }
+        ProbeVbdValid[i] = true;
         double* vx = g->GetX(); double* vy = g->GetY();
         for (int k = 0; k < N; ++k) { vx[k] = vx[k]; vy[k] = vy[k]; }
         double Vbd = Sup;
@@ -167,6 +182,12 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
     }
     double IProbe = ProbeLKGMin;
     double INeedle = NeedleLKGMin;
+    for (int idx = 1; idx <= NNeedle; ++idx) {
+        padPosition = idx;
+        padVbd20C_V = NeedleVbd[idx];
+        padLeakageCurrent_A = NeedleLKG[idx];
+        padResults.Fill();
+    }
     // 归一化列平均
     for (int c = 0; c < 15; ++c) hime[c] /= 15;
 
@@ -238,7 +259,6 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
     hV->SetTitle(" ; ; ;V_{BD} (V)");
     hV->GetZaxis()->SetLabelOffset(0.01);
     c00->SaveAs(out + "VMap_Sensor.pdf");
-    c00->SaveAs(out + "VMap_Sensor.png");
 
     TCanvas* c11 = new TCanvas("c11", "IMap", 1000, 500);
     c11->SetRightMargin(0.17);
@@ -269,6 +289,7 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
         int row = 15 - (idx - 1) / 15;
         hI->Fill(col + 15.5 - 0.5, row - 0.5, NeedleLKG[idx]);
     }
+
     c11->cd(1);
     gPad->SetGridx(1);
     gPad->SetGridy(1);
@@ -312,7 +333,6 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
     hI->GetZaxis()->SetLabelOffset(0.01);
 
     c11->SaveAs(out + "IMap_Sensor.pdf");
-    c11->SaveAs(out + "IMap_Sensor.png");
     // 直方图
     TCanvas* c1 = new TCanvas("c1", "", 1000, 500);
     c1->Divide(2, 1);
@@ -324,7 +344,7 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
     for (int idx = 1; idx <= 225; ++idx) { hBVNeedle->Fill(NeedleVbd[idx]); }
     c1->cd(2);
     hBVNeedle->Draw();
-    c1->SaveAs(out + "BVHist_Sensor.png");
+    c1->SaveAs(out + "BVHist_Sensor.pdf");
 
     TCanvas* c2 = new TCanvas("c2", "", 1200, 600);
     c2->Divide(2, 1);
@@ -334,14 +354,14 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
     for (int idx = 1; idx <= 225; ++idx) { hILNeedle->Fill(NeedleLKG[idx]); }
     c2->cd(1); hILProbe->Draw();
     c2->cd(2); hILNeedle->Draw();
-    c2->SaveAs(out + "IHist_Sensor.png");
+    c2->SaveAs(out + "IHist_Sensor.pdf");
 
     // 列平均
     TCanvas* c3 = new TCanvas("c3", "", 800, 600);
     TH1F* hCol = new TH1F("hCol", "Average I per column @ 0.8VbdMin", 15, 0.5, 15.5);
     for (int c = 0; c < 15; ++c) hCol->SetBinContent(c + 1, hime[c]);
     hCol->Draw();
-    c3->SaveAs(out + "ColumnAvg_Sensor.png");
+    c3->SaveAs(out + "ColumnAvg_Sensor.pdf");
 
     TCanvas* c4 = new TCanvas("c4", "IV Curve", 2000, 1000);
     c4->Divide(2, 1);
@@ -389,7 +409,6 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
     IHEPI->Draw();
 
     c4->SaveAs(out + "IVCurve_Sensor.pdf");
-    c4->SaveAs(out + "IVCurve_Sensor.png");
 
     // ---------- 4. 打印汇总 ----------
     std::cout << "ProbeCard  Vbd min = " << ProbeVbdMin20d << std::endl;
@@ -477,4 +496,37 @@ void temp_vbdmin_cross_toIME_v2(double Tp = 20.0, double Tn = 20.0,
 
     csv.close();
     std::cout << "CSV saved: crosscheck.csv" << std::endl;
+
+    TString outputDir = out;
+    while (outputDir.EndsWith("/")) outputDir.Remove(outputDir.Length() - 1);
+    const TString sensorName = gSystem->BaseName(outputDir.Data());
+    const TString rootFilePath = outputDir + "/" + sensorName + ".root";
+    TFile rootFile(rootFilePath, "RECREATE");
+    if (rootFile.IsZombie()) {
+        std::cerr << "Could not create ROOT output file: " << rootFilePath << std::endl;
+        return;
+    }
+
+    rootFile.cd();
+    padResults.Write();
+
+    int channelID = 0;
+    double channelVbd20C_V = 0.0;
+    double channelLeakageCurrent_A = 0.0;
+    TTree cqcChannelResults("CQC_results", "Matched CQC per-channel Vbd and leakage current");
+    cqcChannelResults.Branch("channel_id", &channelID, "channel_id/I");
+    cqcChannelResults.Branch("vbd_corrected_20C_V", &channelVbd20C_V,
+                             "vbd_corrected_20C_V/D");
+    cqcChannelResults.Branch("leakage_current_A", &channelLeakageCurrent_A,
+                             "leakage_current_A/D");
+    for (int channel = 1; channel <= NProbe; ++channel) {
+        if (!ProbeVbdValid[channel]) continue;
+        channelID = channel;
+        channelVbd20C_V = ProbeVbd[channel];
+        channelLeakageCurrent_A = ProbeLKG[channel];
+        cqcChannelResults.Fill();
+    }
+    cqcChannelResults.Write();
+    rootFile.Close();
+    std::cout << "ROOT file saved: " << rootFilePath << std::endl;
 }

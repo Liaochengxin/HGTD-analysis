@@ -96,7 +96,7 @@ python3 HGTD-analysis/SQC/run_all_sqc.py \
   HGTD-analysis/SQC/config.yaml --dry-run
 ```
 
-结果按 sensor 的 batch 编号分组。每片 sensor 的目录包含 `crosscheck.csv`、`run.log` 和图片；任务清单与总汇总表保留在 `output_path` 根目录：
+结果按 sensor 的 batch 编号分组。每片 sensor 的目录包含 `crosscheck.csv`、`run.log`、图片和一个以 sensor 名命名的 ROOT 文件；任务清单与总汇总表保留在 `output_path` 根目录：
 
 ```text
 results/
@@ -148,4 +148,52 @@ cd HGTD-analysis/SQC/jobs
 
 `crosscheck.csv` 包含 `ProbeCard`、`Needle`、`Needle(inner)` 和 `Needle(inner2)` 四组。`Valid` 表示落在 165–195 V 范围内的数量（ProbeCard 为 15 个通道，Needle 为 225 个 pad），不代表良好 pad 比例。当前 `tn: 20.0` 是针台温度假设；若有实测温度，应更新后重新运行。
 
+每个 sensor 的 ROOT 文件保存两个 TTree。`SQC_results` 每个 SQC pad 一条 entry（共 225 条），包含 `pad_position`（与输入文件 `1-<position>.csv` 的编号一致）、`vbd_corrected_20C_V` 和 `leakage_current_A`。`CQC_results` 保存该 sensor 对应的 CQC channel 数据，每个 channel 一条 entry，包含 `channel_id`、修正到 20°C 的 `vbd_corrected_20C_V` 和 `leakage_current_A`。这些值来自本次 SQC 计算已读取的 CQC channel 曲线；CQC leakage current 是在 `0.8 × ProbeCard VbdMin` 处线性插值得到的值，SQC pad leakage current 则在 `0.8 × Needle VbdMin` 处插值得到。Vbd、leakage map、直方图和 I-V 图导出为 PDF，放在 ROOT 文件旁边。
+
 `process_perpad.C`、`run.C` 和 `PlotSensorVbd_multibatches.C` 是独立的旧版绘图/求和工具，不属于上述批量工作流。
+
+## 绘制 SQC sensor 和 pad 的 Vbd 分布
+
+使用统一脚本 `plot_vbd.py`，通过 `--level` 选择输入和绘图流程。
+`sensor-level` 输入 SQC batch results 目录；脚本递归读取各 sensor 的
+`crosscheck.csv`，只使用 `Group=Needle(inner)` 这一行，分别绘制 Vbd average
+（`Mean`）、Vbd min（`VbdMin`）和 RMS 三张 PDF。默认输出到输入目录下的
+`vbd_sensor_plots/`，也可以通过 `--output` 指定目录：
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/SQC/plot_vbd.py \
+  SQC_results/CERN/1nd_batch \
+  --level sensor-level \
+  --output HGTD-analysis/SQC/plots/1nd_batch_sensor_vbd
+```
+
+`pad-level` 输入一个 sensor 的 ROOT 文件，从 `SQC_results` TTree 读取每个 pad
+修正到 20°C 的 `vbd_corrected_20C_V`，绘制单张直方图。默认 PDF 写在 ROOT 文件
+旁边；此模式下 `--output` 接收 PDF 文件路径：
+
+```bash
+HGTD-analysis/.venv/bin/python HGTD-analysis/SQC/plot_vbd.py \
+  HGTD-analysis/SQC/results/B06/W01-P2/W01-P2.root \
+  --level pad-level \
+  --output HGTD-analysis/SQC/plots/W01-P2_pad_vbd.pdf
+```
+
+两个模式都使用 mplhep ATLAS style，标注 `HGTD Internal`，不显示能量标签。
+ROOT 文件通过已列入 `HGTD-analysis/requirements.txt` 的 `uproot` 读取。
+
+## 汇总当前 results
+
+在 `/eos/user/l/liaoc/public/HGTD_sensor` 下运行：
+
+```bash
+python3 HGTD-analysis/SQC/collect_results.py SQC_results/CERN/1nd_batch
+python3 HGTD-analysis/SQC/collect_results.py SQC_results/CERN \
+  --output SQC_results/CERN/summary_all.csv
+```
+
+汇总按各批次 `sensor_plan.csv` 关联身份，保留 `Tp/Tn`，并增加
+`batch/output_group/output_sensor`，避免跨批次同名 sensor 混淆。
+缺少结果的计划 sensor 会列出；未列入计划或重复的身份报错。
+生成的 job collector 使用同一实现，默认保留配置中的 CERN 输出路径；
+可用位置参数指定迁移到 `SQC_results/CERN` 下的结果。
+详见[当前 results 后处理审核](../doc/POST_PROCESSING_AUDIT_CN.md)。

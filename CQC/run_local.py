@@ -48,22 +48,7 @@ with run_log.open("w") as log:
         stderr=subprocess.STDOUT,
         check=True,
     )
-print("[CQC] ROOT completed; organizing sensor plots", flush=True)
-
-sensor_files = [
-    "VMap_Sensor_{}.png",
-    "BVHist_Sensor_{}.png",
-    "Leakage_Current_Sensor_{}.png",
-    "Leakage_Current_Full_Sensor_{}.png",
-    "IDist_Sensor_{}.png",
-]
-
-for sensor in range(1, 53):
-    sensor_path = result_path / f"sensor_{sensor}"
-    sensor_path.mkdir(exist_ok=True)
-    for filename in sensor_files:
-        source = result_path / filename.format(sensor)
-        source.replace(sensor_path / source.name)
+print("[CQC] ROOT completed", flush=True)
 
 print(f"[CQC] Finished {serial_number} at {temperature}°C", flush=True)
 print(f"[CQC] Results: {result_path}", flush=True)

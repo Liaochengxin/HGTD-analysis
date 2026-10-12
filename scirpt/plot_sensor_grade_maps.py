@@ -28,8 +28,8 @@ from matplotlib.patches import Rectangle
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUTS = {
-    "B23-19": REPOSITORY_ROOT / "2nd_batch_95" / "B23-19" / "sensorYield.csv",
-    "B23-25": REPOSITORY_ROOT / "2nd_batch_95" / "B23-25" / "sensorYield.csv",
+    "B23-19": REPOSITORY_ROOT / "CQC_sample/CERN/2nd_batch_95/B23_19/sensorYields.csv",
+    "B23-25": REPOSITORY_ROOT / "CQC_sample/CERN/2nd_batch_95/B23_25/sensorYields.csv",
 }
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "sensor_grade_maps"
 EXPECTED_SENSORS = set(range(1, 53))

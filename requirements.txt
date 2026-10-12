@@ -1,2 +1,4 @@
 PyYAML>=6.0,<7
 mplhep>=1.0,<2
+uproot>=5.0,<6
+scipy>=1.10,<2
