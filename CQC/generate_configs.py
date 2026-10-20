@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Generate run_local.py inputs for each wafer.
 
-local and cern modes read wafer folders extracted beforehand by
-scirpt/unzip_cqc.py: each wafer dir contains a data subfolder named after
-its serial number (e.g. B33_17/20WS0013300017/*.csv). ihep mode instead
-discovers the per-wafer ZIPs directly (ZIP stem = serial, parent directory
-= wafer name) and generates a job.sh wrapper that stages each ZIP into
-node scratch at run time. No unzip happens here in either case.
+Every mode discovers wafers from the per-wafer ZIPs alone (ZIP stem =
+serial, parent directory = wafer name) and generates a job.sh wrapper that
+stages each ZIP into node scratch at run time: extract, validate the 780
+per-channel CSVs, write the runtime config, run the macro, clean up.
+Nothing is unpacked on the submission side or inside the sample tree
+(ADR 0001 and 0002).
 """
 
 import shlex
@@ -17,119 +17,18 @@ from pathlib import Path
 import yaml
 
 
-with Path(sys.argv[1]).open() as file:
-    config = yaml.safe_load(file)
+# scratch setup + exit handling shared by every mode's wrapper; expects
+# WAFER, DATA_PREFIX and log_msg() to be defined by the preamble
+TRAP_BLOCK = """
+SCRATCH="${TMPDIR:-/tmp}/CQC_$WAFER"
+trap 'status=$?; rm -rf "$SCRATCH"; if [ "$status" -ne 0 ]; then log_msg "FAILED wafer=$WAFER step=$CURRENT_STEP status=$status"; else log_msg "SUCCESS wafer=$WAFER"; fi; exit "$status"' EXIT
+"""
 
-main_path = Path(config["main_path"])
-wafer_folder = main_path / config["wafer_folder"]
-config_folder = main_path / config["config_folder"]
-script_folder = main_path / config["script_folder"]
-run_local = main_path / config["run_local"]
-config_folder.mkdir(parents=True, exist_ok=True)
-script_folder.mkdir(parents=True, exist_ok=True)
-
-wafer_configs = []
-cern_rows = []  # (config_name, serial_number, csv filename prefix) for cern mode
-
-if config["mode"] == "ihep":
-    # the ZIP is the only staged raw form: the job wrapper extracts it into
-    # node scratch at run time, so discovery reads the ZIP names alone
-    seen = set()
-    for zip_path in sorted(wafer_folder.glob("*/*.zip")):
-        wafer_name = zip_path.parent.name
-        if wafer_name in seen:
-            raise ValueError(f"multiple ZIPs found for wafer {wafer_name}")
-        seen.add(wafer_name)
-        wafer_configs.append((wafer_name, wafer_name.replace("-", "_"), None))
-else:
-    for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir()):
-        # extracted data subfolder, named after the wafer serial number
-        data_dirs = [
-            path for path in wafer_path.iterdir()
-            if path.is_dir() and path.name.startswith("20WS")
-        ]
-        if not data_dirs:
-            continue  # not a wafer dir (e.g. aggregate folders)
-        data_dir = data_dirs[0]
-        wafer_name = wafer_path.name
-        config_name = wafer_name.replace("-", "_")
-        serial_number = data_dir.name
-        data_prefix = f"20WS20{serial_number[7:9]}{serial_number[-4:]}"
-
-        output_file = config_folder / f"config_{config_name}.yaml"
-        # cern mode ships no static configs: the sandbox absolute path only
-        # exists inside the job, so job.sh writes the config there at run time.
-        if config["mode"] == "local":
-            wafer_config = {
-                "main_path": str(main_path),
-                "wafer_name": wafer_name,
-                "serial_number": serial_number,
-                "input_prefix": str(data_dir.relative_to(main_path) / data_prefix),
-                "temp_file": config["temp_file"],
-                "root_macro": config["root_macro"],
-                "output_path": config["output_path"],
-            }
-            with output_file.open("w") as file:
-                yaml.safe_dump(wafer_config, file, sort_keys=False)
-        wafer_configs.append((wafer_name, config_name, output_file))
-        if config["mode"] == "cern":
-            cern_rows.append((config_name, serial_number, data_prefix))
-
-if config["mode"] == "local":
-    print(f"Configs: {config_folder}")
-
-if config["mode"] == "local":
-    shell_file = script_folder / "run_all.sh"
-    commands = ["#!/bin/bash", "set -e", ""]
-    for _, _, wafer_config in wafer_configs:
-        commands.append(
-            f"python3 {shlex.quote(str(run_local))} {shlex.quote(str(wafer_config))}"
-        )
-
-elif config["mode"] == "ihep":
-    log_folder = main_path / config["log_folder"]
-    log_folder.mkdir(parents=True, exist_ok=True)
-    submit_options = config["hep_sub_options"].strip()
-    submit_command = "hep_sub" if not submit_options else f"hep_sub {submit_options}"
-
-    # runtime wrapper following the cern-mode job.sh heredoc practice: the
-    # scratch path only exists inside the job, so the wrapper stages the ZIP,
-    # validates it, and writes the config there at run time
-    job_sh = script_folder / "job.sh"
-    job_sh.write_text(f"""#!/bin/bash
-# CQC job wrapper for the IHEP hep_sub cluster: one wafer per job.
-# The per-wafer ZIP is the only staged raw form: the wrapper reads the ZIP
-# straight from the shared filesystem, extracts it into node scratch,
-# validates it, writes the runtime config and runs the analysis. The shared
-# tree is never unpacked, and the scratch copy is removed on exit.
-# argument: wafer directory name under ZIP_DIR
-set -euo pipefail
-wafer="${{1:-}}"
-log_msg() {{ printf '[%s] %s\\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }}
-if [ -z "$wafer" ]; then log_msg "ERROR usage: job.sh <wafer-dir-name>"; exit 2; fi
-log_msg "START wafer=$wafer host=$(hostname)"
-ZIP_DIR={shlex.quote(str(wafer_folder))}
-TEMP_FILE={shlex.quote(str(main_path / config["temp_file"]))}
-ROOT_MACRO={shlex.quote(str(main_path / config["root_macro"]))}
-OUTPUT_PATH={shlex.quote(str(main_path / config["output_path"]))}
-RUN_LOCAL={shlex.quote(str(run_local))}
-MAIN_PATH={shlex.quote(str(main_path))}
-CURRENT_STEP="resolve wafer ZIP"
-shopt -s nullglob
-zips=("$ZIP_DIR/$wafer"/*.zip)
-shopt -u nullglob
-if [ "${{#zips[@]}}" -ne 1 ]; then
-    log_msg "ERROR expected exactly one ZIP under $ZIP_DIR/$wafer, found ${{#zips[@]}}"
-    exit 1
-fi
-zip_path="${{zips[0]}}"
-serial="${{zip_path##*/}}"
-serial="${{serial%.zip}}"
-data_prefix="20WS20${{serial:7:2}}${{serial: -4}}"
-scratch="${{TMPDIR:-/tmp}}/CQC_$wafer"
-trap 'status=$?; rm -rf "$scratch"; if [ "$status" -ne 0 ]; then log_msg "FAILED wafer=$wafer step=$CURRENT_STEP status=$status"; else log_msg "SUCCESS wafer=$wafer"; fi; exit "$status"' EXIT
-CURRENT_STEP="extract and validate $serial"
-python3 - "$zip_path" "$scratch" "$data_prefix" <<'PY'
+# wrapper steps shared by every mode; expects WAFER, SERIAL, ZIP_PATH,
+# DATA_PREFIX, SCRATCH, MAIN_PATH, TEMP_FILE, ROOT_MACRO, OUTPUT_PATH and
+# RUN_LOCAL to be defined by the preamble
+STAGED_JOB_STEPS = """CURRENT_STEP="extract and validate $SERIAL"
+python3 - "$ZIP_PATH" "$SCRATCH" "$DATA_PREFIX" <<'PY'
 import re
 import sys
 import zipfile
@@ -153,23 +52,83 @@ with zipfile.ZipFile(zip_path) as archive:
     archive.extractall(dest)
 print("validated 780 CSVs from " + zip_path)
 PY
-log_msg "scratch ready: $scratch"
+log_msg "scratch ready: $SCRATCH"
 CURRENT_STEP="write runtime config"
-cat > "$scratch/config_$wafer.yaml" <<EOF
+cat > "$SCRATCH/config_$WAFER.yaml" <<EOF
 main_path: $MAIN_PATH
-wafer_name: $wafer
-serial_number: $serial
-input_prefix: $scratch/$data_prefix
+wafer_name: $WAFER
+serial_number: $SERIAL
+input_prefix: $SCRATCH/$DATA_PREFIX
 temp_file: $TEMP_FILE
 root_macro: $ROOT_MACRO
 output_path: $OUTPUT_PATH
 EOF
-CURRENT_STEP="run analysis for $wafer"
+CURRENT_STEP="run analysis for $WAFER"
 cd "$MAIN_PATH"
-python3 "$RUN_LOCAL" "$scratch/config_$wafer.yaml"
-""")
-    job_sh.chmod(0o755)
+python3 "$RUN_LOCAL" "$SCRATCH/config_$WAFER.yaml"
+"""
 
+
+with Path(sys.argv[1]).open() as file:
+    config = yaml.safe_load(file)
+
+main_path = Path(config["main_path"])
+wafer_folder = main_path / config["wafer_folder"]
+script_folder = main_path / config["script_folder"]
+run_local = main_path / config["run_local"]
+script_folder.mkdir(parents=True, exist_ok=True)
+
+# the ZIP is the only staged raw form: discovery reads the ZIP names alone
+wafers = []  # (wafer directory name, serial number) per wafer ZIP
+seen = set()
+for zip_path in sorted(wafer_folder.glob("*/*.zip")):
+    wafer_name = zip_path.parent.name
+    if wafer_name in seen:
+        raise ValueError(f"multiple ZIPs found for wafer {wafer_name}")
+    seen.add(wafer_name)
+    wafers.append((wafer_name, zip_path.stem))
+
+
+def shared_job_sh() -> Path:
+    """Wrapper for local and ihep: the wafer ZIP is resolved by directory glob."""
+    job_sh = script_folder / "job.sh"
+    job_sh.write_text(f"""#!/bin/bash
+# CQC job wrapper: one wafer per job.
+# The per-wafer ZIP is the only staged raw form: the wrapper reads the ZIP
+# straight from the shared filesystem, extracts it into node scratch,
+# validates it, writes the runtime config and runs the analysis. The shared
+# tree is never unpacked, and the scratch copy is removed on exit.
+# argument: wafer directory name under ZIP_DIR
+set -euo pipefail
+WAFER="${{1:-}}"
+log_msg() {{ printf '[%s] %s\\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }}
+if [ -z "$WAFER" ]; then log_msg "ERROR usage: job.sh <wafer-dir-name>"; exit 2; fi
+log_msg "START wafer=$WAFER host=$(hostname)"
+ZIP_DIR={shlex.quote(str(wafer_folder))}
+TEMP_FILE={shlex.quote(str(main_path / config["temp_file"]))}
+ROOT_MACRO={shlex.quote(str(main_path / config["root_macro"]))}
+OUTPUT_PATH={shlex.quote(str(main_path / config["output_path"]))}
+RUN_LOCAL={shlex.quote(str(run_local))}
+MAIN_PATH={shlex.quote(str(main_path))}
+CURRENT_STEP="resolve wafer ZIP"
+shopt -s nullglob
+zips=("$ZIP_DIR/$WAFER"/*.zip)
+shopt -u nullglob
+if [ "${{#zips[@]}}" -ne 1 ]; then
+    log_msg "ERROR expected exactly one ZIP under $ZIP_DIR/$WAFER, found ${{#zips[@]}}"
+    exit 1
+fi
+ZIP_PATH="${{zips[0]}}"
+SERIAL="${{ZIP_PATH##*/}}"
+SERIAL="${{SERIAL%.zip}}"
+DATA_PREFIX="20WS20${{SERIAL:7:2}}${{SERIAL: -4}}"{TRAP_BLOCK}
+""" + STAGED_JOB_STEPS)
+    job_sh.chmod(0o755)
+    return job_sh
+
+
+if config["mode"] == "local":
+    job_sh = shared_job_sh()
     shell_file = script_folder / "run_all.sh"
     commands = [
         "#!/bin/bash",
@@ -177,7 +136,31 @@ python3 "$RUN_LOCAL" "$scratch/config_$wafer.yaml"
         f"JOB_SH={shlex.quote(str(job_sh))}",
         "WAFERS=(",
     ]
-    for wafer_name, _, _ in wafer_configs:
+    for wafer_name, _ in wafers:
+        commands.append(f"    {shlex.quote(wafer_name)}")
+    commands += [
+        ")",
+        "",
+        'for WAFER in "${WAFERS[@]}"; do',
+        '    bash "$JOB_SH" "$WAFER"',
+        "done",
+        "",
+    ]
+
+elif config["mode"] == "ihep":
+    log_folder = main_path / config["log_folder"]
+    log_folder.mkdir(parents=True, exist_ok=True)
+    submit_options = config["hep_sub_options"].strip()
+    submit_command = "hep_sub" if not submit_options else f"hep_sub {submit_options}"
+    job_sh = shared_job_sh()
+    shell_file = script_folder / "run_all.sh"
+    commands = [
+        "#!/bin/bash",
+        "set -e",
+        f"JOB_SH={shlex.quote(str(job_sh))}",
+        "WAFERS=(",
+    ]
+    for wafer_name, _ in wafers:
         commands.append(f"    {shlex.quote(wafer_name)}")
     commands += [
         ")",
@@ -194,7 +177,7 @@ python3 "$RUN_LOCAL" "$scratch/config_$wafer.yaml"
     commands.append(
         f"{submit_command} -o {shlex.quote(str(stdout))} "
         f"-e {shlex.quote(str(stderr))} -argu \"%{{ProcId}}\" "
-        f"-n {len(wafer_configs)} {shlex.quote(str(shell_file))}"
+        f"-n {len(wafers)} {shlex.quote(str(shell_file))}"
     )
 elif config["mode"] == "cern":
     atlas_local_root_base = config["atlas_local_root_base"]
@@ -203,28 +186,30 @@ elif config["mode"] == "cern":
     venv_path = config["venv_path"].rstrip("/")
     eos_input_dir = config["eos_input_dir"].rstrip("/")
     eos_output_dir = config["eos_output_dir"].rstrip("/")
+    flavour = config.get("flavour", "microcentury")
 
-    # three columns: wafer name, serial dir, CSV filename prefix — all known
-    # at generation time, so jobs need no runtime discovery
+    # two columns: wafer directory and serial (ZIP stem) — all known at
+    # generation time; the wrapper derives the CSV filename prefix from the
+    # serial, so no jobs need runtime discovery
     list_file = script_folder / "filelist.txt"
-    list_file.write_text("".join(f"{row[0]} {row[1]} {row[2]}\n" for row in cern_rows))
+    list_file.write_text("".join(f"{row[0]} {row[1]}\n" for row in wafers))
 
     job_sh = script_folder / "job.sh"
     job_sh.write_text(f"""#!/bin/bash
 # CQC job wrapper for the CERN EosSubmit schedds: one wafer per job.
-# All data I/O goes to EOS by full path: inputs (CSVs + temperature table)
-# are read from {eos_input_dir}, results are written straight into
-# {eos_output_dir}/<wafer>/ — nothing packed, nothing transferred.
+# The per-wafer ZIP is the only staged raw form: the wrapper reads the ZIP
+# straight from {eos_input_dir}, extracts it into node scratch, validates it,
+# writes the runtime config and runs the analysis. The EOS tree is never
+# unpacked, and the scratch copy is removed on exit.
 # The only declared input is the frozen code snapshot src.tar: the pool runs
 # the packaged code, external edits never touch running jobs.
-# arguments come from: queue wafer, serial, dprefix from filelist.txt
+# arguments come from: queue wafer, serial from filelist.txt
 set +e
 set -o pipefail
-wafer="$1"
-serial="$2"
-dprefix="$3"
+WAFER="$1"
+SERIAL="$2"
 log_msg() {{ printf '[%s] %s\\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }}
-log_msg "START wafer=$wafer serial=$serial dprefix=$dprefix host=$(hostname)"
+log_msg "START wafer=$WAFER serial=$SERIAL host=$(hostname)"
 export ATLAS_LOCAL_ROOT_BASE={shlex.quote(atlas_local_root_base)}
 log_msg "Loading ATLAS local environment"
 source "$ATLAS_LOCAL_ROOT_BASE/user/atlasLocalSetup.sh"
@@ -244,27 +229,25 @@ status=$?
 if [ "$status" -ne 0 ]; then log_msg "ERROR venv activation failed (exit=$status)"; exit "$status"; fi
 log_msg "Environment ready: Python=$(python3 --version 2>&1), ROOT=$(root-config --version 2>&1)"
 CURRENT_STEP="unpack src.tar"
-trap 'status=$?; log_msg "ERROR step=$CURRENT_STEP line=$LINENO exit=$status command=$BASH_COMMAND"; exit "$status"' ERR
 set -e
 tar xf src.tar
 log_msg "Source archive unpacked"
-# The sandbox absolute path is only known inside the job, so the config is
-# written here instead of shipped statically; EOS locations are baked in.
-CURRENT_STEP="write runtime config"
-cat > "config_${{wafer}}.yaml" <<EOF
-main_path: $PWD
-wafer_name: ${{wafer}}
-serial_number: ${{serial}}
-input_prefix: {eos_input_dir}/${{wafer}}/${{serial}}/${{dprefix}}
-temp_file: {eos_input_dir}/wafer_temperature_template.csv
-root_macro: ${{PWD}}/src/Card52_v3.C
-output_path: {eos_output_dir}
-EOF
-log_msg "Runtime config ready; launching analysis for wafer=$wafer"
-CURRENT_STEP="run analysis for $wafer"
-python3 src/run_local.py "config_${{wafer}}.yaml"
-log_msg "SUCCESS wafer=$wafer"
-""")
+# the submit-dir absolute path is only known inside the job, and the scratch
+# path only exists at run time, so the config is written by this wrapper;
+# EOS locations are baked in
+ZIP_PATH={shlex.quote(eos_input_dir)}/$WAFER/$SERIAL.zip
+TEMP_FILE={shlex.quote(eos_input_dir)}/wafer_temperature_template.csv
+ROOT_MACRO=${{PWD}}/src/Card52_v3.C
+OUTPUT_PATH={shlex.quote(eos_output_dir)}
+RUN_LOCAL=${{PWD}}/src/run_local.py
+MAIN_PATH=$PWD
+CURRENT_STEP="resolve wafer ZIP"
+if [ ! -f "$ZIP_PATH" ]; then
+    log_msg "ERROR no ZIP at $ZIP_PATH"
+    exit 1
+fi
+DATA_PREFIX="20WS20${{SERIAL:7:2}}${{SERIAL: -4}}"{TRAP_BLOCK}
+""" + STAGED_JOB_STEPS)
     job_sh.chmod(0o755)
 
     # code snapshot frozen at generation time: the pool runs exactly this copy,
@@ -278,14 +261,14 @@ log_msg "SUCCESS wafer=$wafer"
     sub_file = script_folder / "cern_batch.sub"
     sub_file.write_text(f"""universe     = vanilla
 executable   = job.sh
-arguments    = $(wafer) $(serial) $(dprefix)
+arguments    = $(wafer) $(serial)
 transfer_input_files  = src.tar
 output       = out/$(ClusterId).$(ProcId).out
 error        = out/$(ClusterId).$(ProcId).err
 log          = logs/$(ClusterId).log
-+JobFlavour  = "{config.get("flavour", "microcentury")}"
++JobFlavour  = "{flavour}"
 MY.WantOS    = "el9"
-queue wafer, serial, dprefix from filelist.txt
+queue wafer, serial from filelist.txt
 """)
 else:
     raise ValueError(f"Unknown mode: {config['mode']}")
@@ -295,7 +278,4 @@ if config["mode"] == "cern":
 else:
     shell_file.write_text("\n".join(commands) + "\n")
     shell_file.chmod(0o755)
-    if config["mode"] == "ihep":
-        print(f"IHEP submit files: {job_sh}, {shell_file}")
-    else:
-        print(f"Shell: {shell_file}")
+    print(f"Submit files: {job_sh}, {shell_file}")

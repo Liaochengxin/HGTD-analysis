@@ -1,7 +1,6 @@
 main_path: /lustrefs/atlas/SUSY/users/liaocx/HGTD/
 mode: ihep
 wafer_folder: CQC_sample/CERN/3nd_batch_125
-config_folder: HGTD-analysis/CQC/configs
 script_folder: HGTD-analysis/CQC/jobs
 run_local: HGTD-analysis/CQC/run_local.py
 log_folder: HGTD-analysis/CQC/job_logs

@@ -3,7 +3,6 @@
 main_path: /Users/liao./cernbox/public/HGTD_sensor/
 mode: local
 wafer_folder: CQC_sample/IHEP/1nd_batch_25
-config_folder: HGTD-analysis/CQC/configs
 script_folder: HGTD-analysis/CQC/jobs
 run_local: HGTD-analysis/CQC/run_local.py
 temp_file: CQC_sample/IHEP/1nd_batch_25/wafer_temperature_template.csv

@@ -7,8 +7,7 @@ compares IHEP and IME yields, and packages the outputs for transfer.
 
 ## Workflow at a glance
 
-1. Prepare the sample tree (the per-wafer raw ZIPs are the input; local and
-   CERN modes additionally need each ZIP extracted once).
+1. Prepare the sample tree — the per-wafer raw ZIPs are the only input.
 2. Run one of the three modes: local, IHEP cluster, or CERN cluster.
 3. Wait for all wafer jobs to finish and confirm each wafer has
    `sensorYield(s).csv` in the results tree.
@@ -28,8 +27,8 @@ CQC_sample/
         ├── wafer_temperature_template.csv     # required for analysis
         ├── B34_10/
         │   ├── 20WS0013400010.zip             # original archive
-        │   ├── 20WS0013400010/                 # extracted input; required
-        │   │                                   # for local/CERN modes only
+        │   ├── 20WS0013400010/                 # legacy extracted tree; not
+        │   │                                   # needed by the workflow
         │   │   ├── 20WS20340010-1.csv
         │   │   ├── 20WS20340010-2.csv
         │   │   └── ...                         # 780 IV CSVs total
@@ -50,25 +49,15 @@ metadata CSVs are retained with the sample for sensor/wafer bookkeeping, while
 `sensorYields.csv` is the existing IME/vendor result used by the optional
 yield cross-check.
 
-How the ZIPs are consumed depends on the mode. IHEP mode reads the ZIPs
-directly — one per wafer, identified by file name alone (ZIP stem = serial,
-parent directory = wafer name); the job wrapper extracts the ZIP into node
-scratch, validates the 780 CSVs, and removes the scratch copy afterwards, so
-no extraction on the submission side is needed. Local and CERN modes still
-read the extracted `20WS...` subdirectories; extract them once with:
-
-```bash
-python3 HGTD-analysis/scirpt/unzip_cqc.py \
-  CQC_sample/IHEP/1nd_batch_25
-```
-
-Pass the batch directory as the positional argument; the helper searches it
-recursively, extracts ZIPs beside their wafer directories, and skips archives
-that are already extracted. Change the argument to the batch being processed,
-for example `CQC_sample/CERN/2nd_batch_95`. For a new batch, preserve the same
-batch-root / wafer-directory / serial-subdirectory structure. When
-transferring the sample to IHEP, the ZIPs must be included; the extracted
-directories can be omitted.
+Every mode consumes the ZIPs directly — one per wafer, identified by file
+name alone (ZIP stem = serial, parent directory = wafer name). The generated
+`job.sh` wrapper reads the ZIP from the batch directory, extracts it into
+node scratch (`${TMPDIR:-/tmp}`), validates the 780 CSVs, and removes the
+scratch copy when the job exits, so nothing is ever unpacked on the
+submission side or inside the sample tree. For a new batch, preserve the
+batch-root / wafer-directory / serial-ZIP structure. When transferring the
+sample to a cluster, ship the ZIPs; the extracted directories are legacy and
+can be omitted.
 
 Create and activate a Python virtual environment from the repository root,
 then install the dependencies from the requirements file:
@@ -89,7 +78,7 @@ ROOT 6.40).
 
 | Mode | Where it runs | How jobs are submitted | Result location |
 |---|---|---|---|
-| Local | Your workstation | `run_all.sh` runs wafer configs sequentially | `HGTD-analysis/CQC/results/<wafer>/` |
+| Local | Your workstation | `run_all.sh` runs wafers sequentially | `HGTD-analysis/CQC/results/<wafer>/` |
 | IHEP cluster | IHEP shared filesystem | One `hep_sub` cluster, one ProcId per wafer | `HGTD-analysis/CQC/results/<wafer>/` on the shared filesystem |
 | CERN cluster | CERN HTCondor EosSubmit | `condor_submit`, one job per wafer; inputs and outputs are read/written directly on EOS | `eos_output_dir/<wafer>/` from the selected CERN config |
 
@@ -98,17 +87,17 @@ Use the matching generator configuration as the starting point:
 | Config | Mode and sample |
 |---|---|
 | `config_generator_local.yaml` | Local; currently points to IHEP `1nd_batch_25` |
-| `config_generator.yaml` | IHEP cluster; currently points to IHEP `1nd_batch_25` |
+| `config_generator.yaml` | IHEP cluster; currently points to CERN `3nd_batch_125` |
 | `config_generator_cern.yaml` | CERN cluster; CERN `2nd_batch_95` |
 
 For a different batch, update `wafer_folder` and `temp_file` together. For
 local and IHEP configs, also check `main_path`, the absolute path to the
 repository on the machine that will run the generator and jobs. Output,
-config, script, and log paths are relative to `main_path`. For CERN mode,
+script, and log paths are relative to `main_path`. For CERN mode,
 `eos_input_dir`, `eos_output_dir`, and `venv_path` are absolute EOS paths
 embedded in the generated job wrapper; update them for your CERN EOS area.
 
-Generate the configs and submit files from the repository root. Replace the
+Generate the submit files from the repository root. Replace the
 config filename with the chosen mode and batch:
 
 ```bash
@@ -116,23 +105,22 @@ python3 HGTD-analysis/CQC/generate_configs.py \
   HGTD-analysis/CQC/config_generator_local.yaml
 ```
 
-The generator scans the batch for per-wafer ZIPs in IHEP mode, and wafer
-folders containing an extracted `20WS...` directory in local and CERN modes
-(extract the sample data first in those modes).
+The generator scans the batch for per-wafer ZIPs in every mode and ships no
+static per-wafer configs; the runtime config is written by each job's
+wrapper.
 
 ## Run locally
 
-After generating local configs, run all wafers sequentially:
+After generating the local submit files, run all wafers sequentially:
 
 ```bash
 bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
-To run just one wafer, pass its generated config directly:
+To run just one wafer, invoke its wrapper directly:
 
 ```bash
-python3 HGTD-analysis/CQC/run_local.py \
-  HGTD-analysis/CQC/configs/config_B34_2.yaml
+bash HGTD-analysis/CQC/jobs/job.sh B34_2
 ```
 
 ## Submit on the IHEP cluster
@@ -180,12 +168,13 @@ cd /eos/user/<user>/HGTD/CQC_batch
 condor_submit cern_batch.sub
 ```
 
-Each queued wafer runs as a separate job. The job reads extracted CSVs and
-temperature data from `eos_input_dir` and writes results directly to
-`eos_output_dir/<wafer>/`. Check the Condor queue and per-job `.out`/`.err`
-files in the submit directory. Regenerate and transfer `src.tar` whenever
-`Card52_v3.C` or `run_local.py` changes; running jobs use the snapshot they
-received at submission.
+Each queued wafer runs as a separate job. The job reads its wafer ZIP from
+`eos_input_dir/<wafer>/<serial>.zip` (so the ZIPs must be on EOS alongside
+the temperature table), stages it into node scratch, and writes results
+directly to `eos_output_dir/<wafer>/`. Check the Condor queue and per-job
+`.out`/`.err` files in the submit directory. Regenerate and transfer
+`src.tar` whenever `Card52_v3.C` or `run_local.py` changes; running jobs use
+the snapshot they received at submission.
 
 ## Results
 
