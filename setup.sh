@@ -1,1 +1,2 @@
-module load lxbatch/eossubmit
+#only setup when apply in CERN cluster
+#module load lxbatch/eossubmit

@@ -1,11 +1,11 @@
 main_path: /lustrefs/atlas/SUSY/users/liaocx/HGTD/
 mode: ihep
-wafer_folder: CQC_sample/IHEP/1nd_batch_25
+wafer_folder: CQC_sample/CERN/3nd_batch_125
 config_folder: HGTD-analysis/CQC/configs
 script_folder: HGTD-analysis/CQC/jobs
 run_local: HGTD-analysis/CQC/run_local.py
 log_folder: HGTD-analysis/CQC/job_logs
-temp_file: CQC_sample/IHEP/1nd_batch_25/wafer_temperature_template.csv
+temp_file: CQC_sample/CERN/3nd_batch_125/wafer_temperature_template.csv
 root_macro: HGTD-analysis/CQC/Card52_v3.C
 output_path: HGTD-analysis/CQC/results
 hep_sub_options: -wt short

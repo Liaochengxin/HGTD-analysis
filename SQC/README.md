@@ -244,6 +244,26 @@ Both modes use mplhep's ATLAS style, label the plots `HGTD Internal`, and omit
 the collision-energy label. ROOT files are read with `uproot`, included in
 `HGTD-analysis/requirements.txt`.
 
+## Compare CQC and SQC sensor Vbd
+
+Use `plot_summary_vbd.py` to compare the CQC channel results with the SQC
+inner-pad results for each sensor. It reads the embedded `CQC_results` and
+`SQC_results` trees from each sensor ROOT file, excludes the outermost ring of
+the 15×15 SQC pad array, calculates the mean, RMS, and minimum, and writes PNG
+and PDF files into the input directory. The input argument defaults to the
+repository's `SQC_results/CERN`; pass a results directory or one sensor ROOT
+file to select a different input:
+
+```bash
+python3 HGTD-analysis/SQC/plot_summary_vbd.py
+python3 HGTD-analysis/SQC/plot_summary_vbd.py SQC_results/CERN/2nd_batch
+```
+
+The plot uses mplhep ATLAS style and the `HGTD Internal` label, with no
+collision-energy text. Zero entries and the ROOT macro's 300 V no-crossing
+sentinel are excluded from the summaries; valid early-breakdown values remain
+visible at the plot edge.
+
 ## Summarize stored results
 
 From `/eos/user/l/liaoc/public/HGTD_sensor`, run:

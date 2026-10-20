@@ -181,6 +181,24 @@ HGTD-analysis/.venv/bin/python HGTD-analysis/SQC/plot_vbd.py \
 两个模式都使用 mplhep ATLAS style，标注 `HGTD Internal`，不显示能量标签。
 ROOT 文件通过已列入 `HGTD-analysis/requirements.txt` 的 `uproot` 读取。
 
+## 对比 CQC 和 SQC sensor Vbd
+
+使用 `plot_summary_vbd.py` 对比每片 sensor 的 CQC channel 与 SQC inner-pad
+结果。脚本直接读取每个 sensor ROOT 文件中嵌入的 `CQC_results` 和
+`SQC_results` 两棵树；对 SQC 的 15×15 pad 阵列剔除最外圈，只用内部 13×13
+pad 计算 mean、RMS 和 minimum，并在输入目录下生成 PNG 和 PDF。input argument
+默认指向仓库内的 `SQC_results/CERN`；也可以传入一个 results 目录或单个
+sensor ROOT 文件：
+
+```bash
+python3 HGTD-analysis/SQC/plot_summary_vbd.py
+python3 HGTD-analysis/SQC/plot_summary_vbd.py SQC_results/CERN/2nd_batch
+```
+
+绘图使用 mplhep ATLAS style 和 `HGTD Internal` 标记，不添加能量文字。汇总时
+排除零值和 ROOT 宏用来表示未找到击穿点的 300 V sentinel；有效的低击穿电压仍
+会在图边缘显示。
+
 ## 汇总当前 results
 
 在 `/eos/user/l/liaoc/public/HGTD_sensor` 下运行：
