@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Generate one run_local.py config for each wafer folder.
+"""Generate run_local.py inputs for each wafer.
 
-The wafer ZIPs are expected to be already extracted by scirpt/unzip_cqc.py:
-each wafer dir contains a data subfolder named after its serial number
-(e.g. B33_17/20WS0013300017/*.csv). No unzip happens here.
+local and cern modes read wafer folders extracted beforehand by
+scirpt/unzip_cqc.py: each wafer dir contains a data subfolder named after
+its serial number (e.g. B33_17/20WS0013300017/*.csv). ihep mode instead
+discovers the per-wafer ZIPs directly (ZIP stem = serial, parent directory
+= wafer name) and generates a job.sh wrapper that stages each ZIP into
+node scratch at run time. No unzip happens here in either case.
 """
 
 import shlex
@@ -28,40 +31,51 @@ script_folder.mkdir(parents=True, exist_ok=True)
 wafer_configs = []
 cern_rows = []  # (config_name, serial_number, csv filename prefix) for cern mode
 
-for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir()):
-    # extracted data subfolder, named after the wafer serial number
-    data_dirs = [
-        path for path in wafer_path.iterdir()
-        if path.is_dir() and path.name.startswith("20WS")
-    ]
-    if not data_dirs:
-        continue  # not a wafer dir (e.g. aggregate folders)
-    data_dir = data_dirs[0]
-    wafer_name = wafer_path.name
-    config_name = wafer_name.replace("-", "_")
-    serial_number = data_dir.name
-    data_prefix = f"20WS20{serial_number[7:9]}{serial_number[-4:]}"
+if config["mode"] == "ihep":
+    # the ZIP is the only staged raw form: the job wrapper extracts it into
+    # node scratch at run time, so discovery reads the ZIP names alone
+    seen = set()
+    for zip_path in sorted(wafer_folder.glob("*/*.zip")):
+        wafer_name = zip_path.parent.name
+        if wafer_name in seen:
+            raise ValueError(f"multiple ZIPs found for wafer {wafer_name}")
+        seen.add(wafer_name)
+        wafer_configs.append((wafer_name, wafer_name.replace("-", "_"), None))
+else:
+    for wafer_path in sorted(path for path in wafer_folder.iterdir() if path.is_dir()):
+        # extracted data subfolder, named after the wafer serial number
+        data_dirs = [
+            path for path in wafer_path.iterdir()
+            if path.is_dir() and path.name.startswith("20WS")
+        ]
+        if not data_dirs:
+            continue  # not a wafer dir (e.g. aggregate folders)
+        data_dir = data_dirs[0]
+        wafer_name = wafer_path.name
+        config_name = wafer_name.replace("-", "_")
+        serial_number = data_dir.name
+        data_prefix = f"20WS20{serial_number[7:9]}{serial_number[-4:]}"
 
-    output_file = config_folder / f"config_{config_name}.yaml"
-    # cern mode ships no static configs: the sandbox absolute path only exists
-    # inside the job, so job.sh writes the config there at run time.
-    if config["mode"] != "cern":
-        wafer_config = {
-            "main_path": str(main_path),
-            "wafer_name": wafer_name,
-            "serial_number": serial_number,
-            "input_prefix": str(data_dir.relative_to(main_path) / data_prefix),
-            "temp_file": config["temp_file"],
-            "root_macro": config["root_macro"],
-            "output_path": config["output_path"],
-        }
-        with output_file.open("w") as file:
-            yaml.safe_dump(wafer_config, file, sort_keys=False)
-    wafer_configs.append((wafer_name, config_name, output_file))
-    if config["mode"] == "cern":
-        cern_rows.append((config_name, serial_number, data_prefix))
+        output_file = config_folder / f"config_{config_name}.yaml"
+        # cern mode ships no static configs: the sandbox absolute path only
+        # exists inside the job, so job.sh writes the config there at run time.
+        if config["mode"] == "local":
+            wafer_config = {
+                "main_path": str(main_path),
+                "wafer_name": wafer_name,
+                "serial_number": serial_number,
+                "input_prefix": str(data_dir.relative_to(main_path) / data_prefix),
+                "temp_file": config["temp_file"],
+                "root_macro": config["root_macro"],
+                "output_path": config["output_path"],
+            }
+            with output_file.open("w") as file:
+                yaml.safe_dump(wafer_config, file, sort_keys=False)
+        wafer_configs.append((wafer_name, config_name, output_file))
+        if config["mode"] == "cern":
+            cern_rows.append((config_name, serial_number, data_prefix))
 
-if config["mode"] != "cern":
+if config["mode"] == "local":
     print(f"Configs: {config_folder}")
 
 if config["mode"] == "local":
@@ -77,24 +91,100 @@ elif config["mode"] == "ihep":
     log_folder.mkdir(parents=True, exist_ok=True)
     submit_options = config["hep_sub_options"].strip()
     submit_command = "hep_sub" if not submit_options else f"hep_sub {submit_options}"
+
+    # runtime wrapper following the cern-mode job.sh heredoc practice: the
+    # scratch path only exists inside the job, so the wrapper stages the ZIP,
+    # validates it, and writes the config there at run time
+    job_sh = script_folder / "job.sh"
+    job_sh.write_text(f"""#!/bin/bash
+# CQC job wrapper for the IHEP hep_sub cluster: one wafer per job.
+# The per-wafer ZIP is the only staged raw form: the wrapper reads the ZIP
+# straight from the shared filesystem, extracts it into node scratch,
+# validates it, writes the runtime config and runs the analysis. The shared
+# tree is never unpacked, and the scratch copy is removed on exit.
+# argument: wafer directory name under ZIP_DIR
+set -euo pipefail
+wafer="${{1:-}}"
+log_msg() {{ printf '[%s] %s\\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }}
+if [ -z "$wafer" ]; then log_msg "ERROR usage: job.sh <wafer-dir-name>"; exit 2; fi
+log_msg "START wafer=$wafer host=$(hostname)"
+ZIP_DIR={shlex.quote(str(wafer_folder))}
+TEMP_FILE={shlex.quote(str(main_path / config["temp_file"]))}
+ROOT_MACRO={shlex.quote(str(main_path / config["root_macro"]))}
+OUTPUT_PATH={shlex.quote(str(main_path / config["output_path"]))}
+RUN_LOCAL={shlex.quote(str(run_local))}
+MAIN_PATH={shlex.quote(str(main_path))}
+CURRENT_STEP="resolve wafer ZIP"
+shopt -s nullglob
+zips=("$ZIP_DIR/$wafer"/*.zip)
+shopt -u nullglob
+if [ "${{#zips[@]}}" -ne 1 ]; then
+    log_msg "ERROR expected exactly one ZIP under $ZIP_DIR/$wafer, found ${{#zips[@]}}"
+    exit 1
+fi
+zip_path="${{zips[0]}}"
+serial="${{zip_path##*/}}"
+serial="${{serial%.zip}}"
+data_prefix="20WS20${{serial:7:2}}${{serial: -4}}"
+scratch="${{TMPDIR:-/tmp}}/CQC_$wafer"
+trap 'status=$?; rm -rf "$scratch"; if [ "$status" -ne 0 ]; then log_msg "FAILED wafer=$wafer step=$CURRENT_STEP status=$status"; else log_msg "SUCCESS wafer=$wafer"; fi; exit "$status"' EXIT
+CURRENT_STEP="extract and validate $serial"
+python3 - "$zip_path" "$scratch" "$data_prefix" <<'PY'
+import re
+import sys
+import zipfile
+
+zip_path, dest, prefix = sys.argv[1], sys.argv[2], sys.argv[3]
+pattern = re.compile(
+    re.escape(prefix) + r"(0[1-9]|[1-4][0-9]|5[0-2])-([1-9]|1[0-5])\\.csv$"
+)
+with zipfile.ZipFile(zip_path) as archive:
+    names = archive.namelist()
+    matched = [name for name in names if pattern.fullmatch(name)]
+    if len(names) != 780 or len(matched) != 780:
+        unmatched = sorted(set(names) - set(matched))[:10]
+        sys.stderr.write(
+            "ERROR " + zip_path + ": expected 52x15=780 members named "
+            "<serial-prefix><sensor 01-52>-<column 1-15>.csv, found "
+            + str(len(names)) + " members, " + str(len(matched))
+            + " matching; unmatched: " + repr(unmatched) + "\\n"
+        )
+        sys.exit(1)
+    archive.extractall(dest)
+print("validated 780 CSVs from " + zip_path)
+PY
+log_msg "scratch ready: $scratch"
+CURRENT_STEP="write runtime config"
+cat > "$scratch/config_$wafer.yaml" <<EOF
+main_path: $MAIN_PATH
+wafer_name: $wafer
+serial_number: $serial
+input_prefix: $scratch/$data_prefix
+temp_file: $TEMP_FILE
+root_macro: $ROOT_MACRO
+output_path: $OUTPUT_PATH
+EOF
+CURRENT_STEP="run analysis for $wafer"
+cd "$MAIN_PATH"
+python3 "$RUN_LOCAL" "$scratch/config_$wafer.yaml"
+""")
+    job_sh.chmod(0o755)
+
     shell_file = script_folder / "run_all.sh"
     commands = [
         "#!/bin/bash",
         "set -e",
-        f"MAIN_PATH={shlex.quote(str(main_path))}",
-        f"CONFIG_FOLDER={shlex.quote(str(config_folder))}",
-        f"RUN_LOCAL={shlex.quote(str(run_local))}",
+        f"JOB_SH={shlex.quote(str(job_sh))}",
         "WAFERS=(",
     ]
-    for _, config_name, _ in wafer_configs:
-        commands.append(f"    {shlex.quote(config_name)}")
+    for wafer_name, _, _ in wafer_configs:
+        commands.append(f"    {shlex.quote(wafer_name)}")
     commands += [
         ")",
         "",
         "if [ \"$#\" -eq 1 ]; then",
-        "    CONFIG_NAME=\"${WAFERS[$1]}\"",
-        "    cd \"$MAIN_PATH\"",
-        "    python3 \"$RUN_LOCAL\" \"$CONFIG_FOLDER/config_${CONFIG_NAME}.yaml\"",
+        "    WAFER=\"${WAFERS[$1]}\"",
+        "    bash \"$JOB_SH\" \"$WAFER\"",
         "    exit $?",
         "fi",
         "",
@@ -205,4 +295,7 @@ if config["mode"] == "cern":
 else:
     shell_file.write_text("\n".join(commands) + "\n")
     shell_file.chmod(0o755)
-    print(f"Shell: {shell_file}")
+    if config["mode"] == "ihep":
+        print(f"IHEP submit files: {job_sh}, {shell_file}")
+    else:
+        print(f"Shell: {shell_file}")

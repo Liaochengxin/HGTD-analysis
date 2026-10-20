@@ -2,11 +2,11 @@
 
 > English version: [README.md](README.md)
 
-本流程使用 ROOT 宏 `Card52_v3.C` 分析已解压的晶圆 IV 曲线，生成 sensor grade 和图表；随后汇总 IHEP 与 IME 的 grade，并将结果打包传输。
+本流程使用 ROOT 宏 `Card52_v3.C` 分析晶圆 IV 曲线，生成 sensor grade 和图表；随后汇总 IHEP 与 IME 的 grade，并将结果打包传输。
 
 ## 流程概览
 
-1. 按下方目录结构准备输入数据，并解压目标 batch 的 ZIP。
+1. 按下方目录结构准备输入数据（每片晶圆的原始 ZIP 是输入；local 和 CERN 模式还需先将 ZIP 解压一次）。
 2. 选择本地、IHEP 集群或 CERN 集群模式运行分析。
 3. 等待所有晶圆作业完成，确认每片晶圆都有 `sensorYield.csv`。
 4. 分别整理 IHEP 和 IME 的 grade，再生成两者的 grade 数量 cross-check。
@@ -23,7 +23,7 @@ CQC_sample/
         ├── wafer_temperature_template.csv     # 分析必需
         ├── B34_10/
         │   ├── 20WS0013400010.zip             # 原始压缩包
-        │   ├── 20WS0013400010/                 # 解压后的输入目录，分析必需
+        │   ├── 20WS0013400010/                 # 解压后的输入目录；local/CERN 模式必需
         │   │   ├── 20WS20340010-1.csv
         │   │   ├── 20WS20340010-2.csv
         │   │   └── ...                         # 共 780 个 IV CSV
@@ -37,16 +37,16 @@ CQC_sample/
         └── ...
 ```
 
-每片晶圆必须有一个以 `20WS...` 序列号命名的解压目录；配置生成器会跳过没有该目录的晶圆。目录中是每个 sensor 每个测试列的 IV CSV：52 个 sensor × 15 列，共 780 个文件。ROOT 分析需要这些 CSV 和 batch 根目录的温度表。metadata CSV 随样本保留，用于 sensor/wafer 信息关联；已有 `sensorYields.csv` 用作 IME/vendor grade 输入。原始 ZIP 会保留。
+batch 根目录必须包含 `wafer_temperature_template.csv`。每片晶圆的原始输入是其 `20WS...` ZIP：52 个 sensor × 15 列，共 780 个 IV CSV，加上温度表即 ROOT 分析所需的全部数据。metadata CSV 随样本保留，用于 sensor/wafer 信息关联；已有 `sensorYields.csv` 用作 IME/vendor grade 输入。
 
-从仓库根目录运行以下命令，并将参数替换为要处理的 batch 路径：
+ZIP 的消费方式取决于运行模式。IHEP 模式直接读取 ZIP——每片晶圆一个 ZIP，仅凭文件名识别（ZIP 文件名 = 序列号，上层目录 = 晶圆名）；作业脚本会把 ZIP 解压到节点 scratch，校验 780 个 CSV，结束后删除 scratch，因此提交侧无需任何解压。local 和 CERN 模式仍读取解压后的 `20WS...` 子目录，需先用以下命令解压一次：
 
 ```bash
 python3 HGTD-analysis/scirpt/unzip_cqc.py \
   CQC_sample/IHEP/1nd_batch_25
 ```
 
-脚本会递归搜索指定 batch 目录，在 ZIP 所在晶圆目录旁解压，并跳过已解压的 ZIP。其他示例：`CQC_sample/CERN/2nd_batch_95`。新 batch 也应保持 batch 根目录 / wafer 目录 / 序列号子目录的结构。传输到 IHEP 时，如果已包含解压目录，可以不传原始 ZIP。
+将 batch 目录作为位置参数；脚本会递归搜索指定 batch 目录，在 ZIP 所在晶圆目录旁解压，并跳过已解压的 ZIP。其他示例：`CQC_sample/CERN/2nd_batch_95`。新 batch 也应保持 batch 根目录 / wafer 目录 / 序列号子目录的结构。传输到 IHEP 时必须包含原始 ZIP；解压目录可以省略。
 
 ## Python 和 ROOT 环境
 
@@ -86,7 +86,7 @@ python3 HGTD-analysis/CQC/generate_configs.py \
   HGTD-analysis/CQC/config_generator_local.yaml
 ```
 
-生成器会扫描 `wafer_folder` 下含有已解压 `20WS...` 子目录的晶圆目录。生成配置前先解压目标 batch。
+生成器在 IHEP 模式下扫描 batch 中的每晶圆 ZIP；local 和 CERN 模式扫描含有已解压 `20WS...` 子目录的晶圆目录（这两种模式需先解压目标 batch）。
 
 ## 本地运行
 
@@ -105,11 +105,11 @@ python3 HGTD-analysis/CQC/run_local.py \
 
 ## IHEP 集群提交
 
-先将仓库和样本传到 IHEP worker 可访问的共享路径。macOS 创建 tar 包时可排除扩展属性和原始 ZIP（作业读取的是解压后的 CSV）：
+先将仓库和样本传到 IHEP worker 可访问的共享路径。必须包含每片晶圆的原始 ZIP——作业直接读取 ZIP；IHEP 运行不需要解压目录。macOS 创建 tar 包时排除扩展属性即可：
 
 ```bash
 tar czf HGTD_sensor.tar.gz --no-xattrs --no-mac-metadata \
-  --exclude='*.zip' -C /path/to/parent HGTD_sensor
+  -C /path/to/parent HGTD_sensor
 ```
 
 在 IHEP 上解包后，将 `config_generator.yaml` 中的 `main_path` 设为共享路径，并检查 `wafer_folder`、`temp_file` 是否指向目标 batch。然后生成并提交：
@@ -120,7 +120,7 @@ python3 HGTD-analysis/CQC/generate_configs.py \
 bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
-IHEP 模式为发现的每片晶圆创建一个 ProcId。生成的脚本将 ProcId 映射到对应配置。使用 `hep_q -u` 查看队列；标准输出和错误日志位于配置的 `log_folder`，文件名为 `job_<ProcId>.out` 和 `job_<ProcId>.err`。
+IHEP 模式为发现的每片晶圆 ZIP 创建一个 ProcId。生成的 `run_all.sh` 将 ProcId 映射到对应晶圆，每个作业的 `job.sh` 会把该晶圆的 ZIP 解压到节点 scratch（`$TMPDIR`），校验 780 个 CSV，作业退出时删除 scratch——损坏或不完整的 ZIP 会让作业带着明确的错误信息失败。使用 `hep_q -u` 查看队列；标准输出和错误日志位于配置的 `log_folder`，文件名为 `job_<ProcId>.out` 和 `job_<ProcId>.err`。
 
 ## CERN 集群提交
 

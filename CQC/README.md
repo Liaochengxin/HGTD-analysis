@@ -2,12 +2,13 @@
 
 > 中文说明见 [README_CN.md](README_CN.md).
 
-This workflow runs `Card52_v3.C` on extracted wafer IV curves, collects sensor
-grades, compares IHEP and IME yields, and packages the outputs for transfer.
+This workflow runs `Card52_v3.C` on wafer IV curves, collects sensor grades,
+compares IHEP and IME yields, and packages the outputs for transfer.
 
 ## Workflow at a glance
 
-1. Prepare the sample tree and extract each raw ZIP once.
+1. Prepare the sample tree (the per-wafer raw ZIPs are the input; local and
+   CERN modes additionally need each ZIP extracted once).
 2. Run one of the three modes: local, IHEP cluster, or CERN cluster.
 3. Wait for all wafer jobs to finish and confirm each wafer has
    `sensorYield(s).csv` in the results tree.
@@ -28,6 +29,7 @@ CQC_sample/
         ├── B34_10/
         │   ├── 20WS0013400010.zip             # original archive
         │   ├── 20WS0013400010/                 # extracted input; required
+        │   │                                   # for local/CERN modes only
         │   │   ├── 20WS20340010-1.csv
         │   │   ├── 20WS20340010-2.csv
         │   │   └── ...                         # 780 IV CSVs total
@@ -41,14 +43,19 @@ CQC_sample/
         └── ...
 ```
 
-The batch root must contain `wafer_temperature_template.csv`. Each wafer must
-have one extracted subdirectory named after its `20WS...` serial; the config
-generator skips wafer directories without one. Its contents are the per-column
-IV CSVs (52 sensors × 15 columns = 780 files). The root analysis needs these
-CSVs and the temperature table. The metadata CSVs are retained with the sample
-for sensor/wafer bookkeeping, while `sensorYields.csv` is the existing
-IME/vendor result used by the optional yield cross-check. The original ZIPs
-are retained; extraction is performed by:
+The batch root must contain `wafer_temperature_template.csv`. The raw input of
+each wafer is its `20WS...` ZIP: 52 sensors × 15 columns = 780 per-column IV
+CSVs, which is all the ROOT analysis needs besides the temperature table. The
+metadata CSVs are retained with the sample for sensor/wafer bookkeeping, while
+`sensorYields.csv` is the existing IME/vendor result used by the optional
+yield cross-check.
+
+How the ZIPs are consumed depends on the mode. IHEP mode reads the ZIPs
+directly — one per wafer, identified by file name alone (ZIP stem = serial,
+parent directory = wafer name); the job wrapper extracts the ZIP into node
+scratch, validates the 780 CSVs, and removes the scratch copy afterwards, so
+no extraction on the submission side is needed. Local and CERN modes still
+read the extracted `20WS...` subdirectories; extract them once with:
 
 ```bash
 python3 HGTD-analysis/scirpt/unzip_cqc.py \
@@ -59,9 +66,9 @@ Pass the batch directory as the positional argument; the helper searches it
 recursively, extracts ZIPs beside their wafer directories, and skips archives
 that are already extracted. Change the argument to the batch being processed,
 for example `CQC_sample/CERN/2nd_batch_95`. For a new batch, preserve the same
-batch-root / wafer-directory / serial-subdirectory structure. When transferring
-the sample to IHEP, the original ZIPs can be excluded if the extracted
-directories are included.
+batch-root / wafer-directory / serial-subdirectory structure. When
+transferring the sample to IHEP, the ZIPs must be included; the extracted
+directories can be omitted.
 
 Create and activate a Python virtual environment from the repository root,
 then install the dependencies from the requirements file:
@@ -109,8 +116,9 @@ python3 HGTD-analysis/CQC/generate_configs.py \
   HGTD-analysis/CQC/config_generator_local.yaml
 ```
 
-The generator scans wafer folders that contain an extracted `20WS...`
-directory. Extract the sample data before generating configs.
+The generator scans the batch for per-wafer ZIPs in IHEP mode, and wafer
+folders containing an extracted `20WS...` directory in local and CERN modes
+(extract the sample data first in those modes).
 
 ## Run locally
 
@@ -130,12 +138,13 @@ python3 HGTD-analysis/CQC/run_local.py \
 ## Submit on the IHEP cluster
 
 Transfer the repository/sample tree to a path shared with IHEP worker nodes.
-For a macOS-created tarball, omit extended attributes and the original ZIPs
-(the extracted CSVs are what the jobs read):
+Keep the original per-wafer ZIPs — they are what the jobs read; the extracted
+per-serial directories are not needed for IHEP runs. For a macOS-created
+tarball, omit extended attributes:
 
 ```bash
 tar czf HGTD_sensor.tar.gz --no-xattrs --no-mac-metadata \
-  --exclude='*.zip' -C /path/to/parent HGTD_sensor
+  -C /path/to/parent HGTD_sensor
 ```
 
 On the IHEP machine, unpack the tree, set `main_path` in
@@ -149,10 +158,13 @@ python3 HGTD-analysis/CQC/generate_configs.py \
 bash HGTD-analysis/CQC/jobs/run_all.sh
 ```
 
-IHEP mode creates one `hep_sub` cluster with one process per discovered wafer.
-The generated script maps each process ID to the corresponding wafer config.
-Check the queue with `hep_q -u`; stdout and stderr are written under the
-configured `log_folder` as `job_<ProcId>.out` and `job_<ProcId>.err`.
+IHEP mode creates one `hep_sub` cluster with one process per discovered wafer
+ZIP. The generated `run_all.sh` maps each process ID to the corresponding
+wafer, and each job's `job.sh` extracts that wafer's ZIP into node scratch
+(`$TMPDIR`), validates the 780 CSVs, and removes the scratch copy when the
+job exits — a corrupt or incomplete ZIP fails the job with an explicit
+message. Check the queue with `hep_q -u`; stdout and stderr are written under
+the configured `log_folder` as `job_<ProcId>.out` and `job_<ProcId>.err`.
 
 ## Submit on the CERN cluster
 
