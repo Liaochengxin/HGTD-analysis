@@ -9,6 +9,7 @@ Nothing is unpacked on the submission side or inside the sample tree
 (ADR 0001 and 0002).
 """
 
+import re
 import shlex
 import sys
 import tarfile
@@ -83,10 +84,14 @@ wafers = []  # (wafer directory name, serial number) per wafer ZIP
 seen = set()
 for zip_path in sorted(wafer_folder.glob("*/*.zip")):
     wafer_name = zip_path.parent.name
+    serial_number = zip_path.stem
     if wafer_name in seen:
         raise ValueError(f"multiple ZIPs found for wafer {wafer_name}")
+    if not re.fullmatch(r"20WS\d+", serial_number):
+        raise ValueError(f"unexpected wafer ZIP name {zip_path.name}: "
+                         f"stem must be 20WS<digits>")
     seen.add(wafer_name)
-    wafers.append((wafer_name, zip_path.stem))
+    wafers.append((wafer_name, serial_number))
 
 
 def shared_job_sh() -> Path:

@@ -12,6 +12,7 @@ def resolve_path(path):
     return MAIN_PATH / Path(path).expanduser()
 
 WAFER_RE = re.compile(r"B(?P<batch>\d+)[_-](?P<wafer>\d+)")
+SERIAL_RE = re.compile(r"20WS\d+")
 GRADES = {"A": "A", "B": "B", "B1": "B", "B2": "B", "C": "C"}
 
 
@@ -46,18 +47,34 @@ def find_yield_file(wafer_path):
     # Explicit supported schema versions; unrelated IV CSVs are never selected.
     candidates = [p for p in wafer_path.glob('*.csv')
                   if p.name in ('sensorYield.csv', 'sensorYields.csv')
-                  or re.fullmatch(r'20WS\d+\.csv', p.name)]
+                  or (p.suffix == '.csv' and SERIAL_RE.fullmatch(p.stem))]
     if len(candidates) != 1:
         raise ValueError(f"{wafer_path}: expected one sensor yield table, found {len(candidates)}")
     return candidates[0]
 
 
 def wafer_serial(sample_path):
-    candidates = sorted(p.name for p in sample_path.iterdir()
-                        if p.is_dir() and re.fullmatch(r'20WS\d+', p.name))
-    if len(candidates) != 1:
-        raise ValueError(f"{sample_path}: expected one extracted 20WS serial directory, found {candidates}")
-    return candidates[0]
+    # the per-wafer ZIP name is the primary serial carrier (ADR 0002); the
+    # extracted serial directory remains as a fallback for legacy trees.
+    # A ZIP alongside extracted directories must agree with them: leftover
+    # or mismatched staging output must fail loudly, never pass silently.
+    zips = sorted(p for p in sample_path.iterdir()
+                  if p.is_file() and p.suffix.lower() == '.zip'
+                  and SERIAL_RE.fullmatch(p.stem))
+    if len(zips) > 1:
+        raise ValueError(f"{sample_path}: expected at most one serial ZIP, found "
+                         f"{[p.name for p in zips]}")
+    dirs = sorted(p.name for p in sample_path.iterdir()
+                  if p.is_dir() and SERIAL_RE.fullmatch(p.name))
+    if zips:
+        if len(dirs) > 1 or (dirs and dirs[0] != zips[0].stem):
+            raise ValueError(f"{sample_path}: serial ZIP {zips[0].name} disagrees "
+                             f"with extracted serial directories {dirs}")
+        return zips[0].stem
+    if len(dirs) != 1:
+        raise ValueError(f"{sample_path}: expected one 20WS serial (ZIP name or "
+                         f"extracted directory), found {dirs}")
+    return dirs[0]
 
 
 def read_yields(path):

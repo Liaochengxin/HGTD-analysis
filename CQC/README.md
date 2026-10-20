@@ -214,7 +214,9 @@ Relative collector, comparison and yield-summary paths remain rooted at
 `Bxx_wafer/` directories; `Bxx-wafer` sample names are normalized to the same
 identity. Yield tables may be named `sensorYield.csv`, `sensorYields.csv`, or
 `20WS<serial>.csv`; multiple candidates are an error. `--sample` selects the
-matching extracted `20WS...` serial directories.
+matching extracted `20WS...` serial directories (the per-wafer ZIP name is
+used as the serial carrier; the extracted directory is only a legacy
+fallback).
 
 ```bash
 python3 HGTD-analysis/CQC/collect_sensor_yields.py \
